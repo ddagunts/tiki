@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="docs/screenshots/logo.png" alt="TKey app icon" width="128">
+  <img src="docs/screenshots/logo.png" alt="tiki app icon" width="128">
 </p>
 
-<h1 align="center">TKey</h1>
+<h1 align="center">tiki</h1>
 
 A phone-only Tesla key for Android. No cloud. No internet. No Google Play Services.
 The only runtime permission the app asks for is **Nearby devices** — that's it.
