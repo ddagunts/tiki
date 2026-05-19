@@ -2,6 +2,7 @@ package com.tkey.ui
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -26,6 +27,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -49,6 +51,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.BluetoothSearching
 import androidx.compose.material.icons.automirrored.filled.VolumeDown
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
+import androidx.compose.material.icons.filled.AcUnit
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Air
 import androidx.compose.material.icons.filled.Bluetooth
@@ -61,14 +64,26 @@ import androidx.compose.material.icons.filled.DirectionsCar
 import androidx.compose.material.icons.filled.ElectricCar
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
+import androidx.compose.material.icons.filled.NotificationsActive
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Power
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Remove
+import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material.icons.filled.Thermostat
+import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.Whatshot
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -78,7 +93,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -107,17 +126,25 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
+import com.tesla.generated.carserver.server.CarServer
+import com.tesla.generated.carserver.vehicle.Vehicle
 import com.tesla.generated.universalmessage.UniversalMessage
 import com.tesla.generated.vcsec.Vcsec
 import com.tkey.ble.CarConnection
 import com.tkey.crypto.Identity
 import com.tkey.session.TeslaSession
+import com.tkey.ui.proximity.ProximityConfig
+import com.tkey.ui.proximity.ProximityFsm
+import com.tkey.ui.proximity.ProximityRegistry
 import com.tkey.ui.theme.Accent
 import com.tkey.ui.theme.AccentDim
 import com.tkey.ui.theme.Danger
+import com.tkey.ui.theme.DangerDim
 import com.tkey.ui.theme.Graphite
 import com.tkey.ui.theme.GraphiteHi
 import com.tkey.ui.theme.Hairline
+import com.tkey.ui.theme.Info
+import com.tkey.ui.theme.InfoDim
 import com.tkey.ui.theme.Ink
 import com.tkey.ui.theme.Success
 import com.tkey.ui.theme.TKeyTheme
@@ -127,6 +154,9 @@ import com.tkey.ui.theme.Warning
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import kotlin.math.max
+import kotlin.math.min
+import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -173,6 +203,16 @@ private fun Screen(modifier: Modifier = Modifier) {
     var showAddDialog by rememberSaveable { mutableStateOf(false) }
     var statusError by remember { mutableStateOf<String?>(null) }
     var showDetails by rememberSaveable { mutableStateOf(false) }
+    var subscreen by rememberSaveable { mutableStateOf("main") }
+    var settingsVin by rememberSaveable { mutableStateOf<String?>(null) }
+    val proxConfigs = remember(cars.size) {
+        cars.associate { it.vin to carStore.getProximity(it.vin) }
+    }
+
+    LaunchedEffect(Unit) {
+        // Seed registry so settings UI reflects persisted enabled-state immediately.
+        ProximityRegistry.refresh(ctx)
+    }
 
     val phase = controller.phase.collectAsState().value
     val connection = controller.connection.collectAsState().value
@@ -239,6 +279,7 @@ private fun Screen(modifier: Modifier = Modifier) {
                 vin = ""
                 selectedName = null
                 statusError = null
+                subscreen = "main"
             })
             HeroCard(
                 name = selectedName ?: "Tesla",
@@ -292,36 +333,66 @@ private fun Screen(modifier: Modifier = Modifier) {
                 }
 
                 val infotainmentReady = sess.isReady(UniversalMessage.Domain.DOMAIN_INFOTAINMENT)
-                ActionGrid(
-                    enabled = sessionReady,
-                    infotainmentEnabled = sessionReady && infotainmentReady,
-                    onLock = { coScope.launch { runCatching { sess.lock() }.onFailure { statusError = it.message } } },
-                    onUnlock = { coScope.launch { runCatching { sess.unlock() }.onFailure { statusError = it.message } } },
-                    onTrunkOpen = { coScope.launch { runCatching { sess.openTrunk() }.onFailure { statusError = it.message } } },
-                    onTrunkClose = { coScope.launch { runCatching { sess.closeTrunk() }.onFailure { statusError = it.message } } },
-                    onPortOpen = { coScope.launch { runCatching { sess.openChargePort() }.onFailure { statusError = it.message } } },
-                    onPortClose = { coScope.launch { runCatching { sess.closeChargePort() }.onFailure { statusError = it.message } } },
-                    onVentWindows = { coScope.launch { runCatching { sess.ventWindows() }.onFailure { statusError = it.message } } },
-                    onCloseWindows = { coScope.launch { runCatching { sess.closeWindows() }.onFailure { statusError = it.message } } },
-                    onVolumeDown = { coScope.launch { runCatching { sess.bumpVolume(-1) }.onFailure { statusError = it.message } } },
-                    onVolumeUp = { coScope.launch { runCatching { sess.bumpVolume(1) }.onFailure { statusError = it.message } } },
-                )
+                val onErr: (Throwable) -> Unit = { statusError = it.message }
 
-                VehicleStatusCard(vehicleStatus)
+                when (subscreen) {
+                    "comfort" -> ComfortScreen(
+                        enabled = sessionReady && infotainmentReady,
+                        vehicleData = vehicleData,
+                        onBack = { subscreen = "main" },
+                        run = { block -> coScope.launch { runCatching { block() }.onFailure(onErr) } },
+                        session = sess,
+                    )
+                    "advanced" -> AdvancedScreen(
+                        enabled = sessionReady && infotainmentReady,
+                        vehicleData = vehicleData,
+                        onBack = { subscreen = "main" },
+                        run = { block -> coScope.launch { runCatching { block() }.onFailure(onErr) } },
+                        session = sess,
+                    )
+                    else -> {
+                        ActionGrid(
+                            enabled = sessionReady,
+                            infotainmentEnabled = sessionReady && infotainmentReady,
+                            onLock = { coScope.launch { runCatching { sess.lock() }.onFailure(onErr) } },
+                            onUnlock = { coScope.launch { runCatching { sess.unlock() }.onFailure(onErr) } },
+                            onTrunkOpen = { coScope.launch { runCatching { sess.openTrunk() }.onFailure(onErr) } },
+                            onTrunkClose = { coScope.launch { runCatching { sess.closeTrunk() }.onFailure(onErr) } },
+                            onPortOpen = { coScope.launch { runCatching { sess.openChargePort() }.onFailure(onErr) } },
+                            onPortClose = { coScope.launch { runCatching { sess.closeChargePort() }.onFailure(onErr) } },
+                            onVentWindows = { coScope.launch { runCatching { sess.ventWindows() }.onFailure(onErr) } },
+                            onCloseWindows = { coScope.launch { runCatching { sess.closeWindows() }.onFailure(onErr) } },
+                            onComfort = { subscreen = "comfort" },
+                            onAdvanced = { subscreen = "advanced" },
+                        )
 
-                TechnicalDetails(
-                    expanded = showDetails,
-                    onToggle = { showDetails = !showDetails },
-                    phase = phase,
-                    connState = connState,
-                    sessionStatus = sessionStatus,
-                    enrollment = enrollment,
-                    rxCount = rxCount,
-                    identity = identity,
-                )
+                        VehicleStatusCard(vehicleStatus, vehicleData)
+
+                        TechnicalDetails(
+                            expanded = showDetails,
+                            onToggle = { showDetails = !showDetails },
+                            phase = phase,
+                            connState = connState,
+                            sessionStatus = sessionStatus,
+                            enrollment = enrollment,
+                            rxCount = rxCount,
+                            identity = identity,
+                        )
+                    }
+                }
             }
 
             statusError?.let { ErrorBanner(it) }
+        } else if (settingsVin != null) {
+            val car = cars.firstOrNull { it.vin == settingsVin }
+            if (car == null) {
+                LaunchedEffect(settingsVin) { settingsVin = null }
+            } else {
+                ProximitySettingsScreen(
+                    car = car,
+                    onBack = { settingsVin = null },
+                )
+            }
         } else {
             statusError?.let { ErrorBanner(it) }
 
@@ -336,6 +407,7 @@ private fun Screen(modifier: Modifier = Modifier) {
                     for (car in cars) {
                         CarCard(
                             car = car,
+                            proximityEnabled = proxConfigs[car.vin]?.enabled == true,
                             onSelect = {
                                 vin = car.vin
                                 selectedName = car.name
@@ -343,6 +415,7 @@ private fun Screen(modifier: Modifier = Modifier) {
                                 carStore.setLastVin(car.vin)
                                 startWithPermissions()
                             },
+                            onSettings = { settingsVin = car.vin },
                             onDelete = {
                                 val updated = carStore.remove(car.vin)
                                 cars.clear()
@@ -351,6 +424,7 @@ private fun Screen(modifier: Modifier = Modifier) {
                                     vin = ""
                                     selectedName = null
                                 }
+                                ProximityRegistry.refresh(ctx)
                             },
                         )
                     }
@@ -392,19 +466,19 @@ private fun BackPill(label: String, onClick: () -> Unit) {
             .background(GraphiteHi)
             .border(1.dp, Hairline, RoundedCornerShape(999.dp))
             .clickable(onClick = onClick)
-            .padding(start = 8.dp, end = 14.dp, top = 6.dp, bottom = 6.dp),
+            .padding(start = 12.dp, end = 18.dp, top = 10.dp, bottom = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(
             Icons.AutoMirrored.Filled.ArrowBack,
             contentDescription = null,
             tint = Accent,
-            modifier = Modifier.size(16.dp),
+            modifier = Modifier.size(20.dp),
         )
-        Spacer(Modifier.width(6.dp))
+        Spacer(Modifier.width(8.dp))
         Text(
             label,
-            style = MaterialTheme.typography.labelMedium,
+            style = MaterialTheme.typography.titleSmall,
             color = MaterialTheme.colorScheme.onBackground,
         )
     }
@@ -496,7 +570,9 @@ private fun EmptyCarsCard(onAdd: () -> Unit) {
 @Composable
 private fun CarCard(
     car: SavedCar,
+    proximityEnabled: Boolean,
     onSelect: () -> Unit,
+    onSettings: () -> Unit,
     onDelete: () -> Unit,
 ) {
     Surface(
@@ -550,6 +626,22 @@ private fun CarCard(
                         color = TextSecondary,
                         fontFamily = FontFamily.Monospace,
                     )
+                    if (proximityEnabled) {
+                        Spacer(Modifier.width(10.dp))
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(999.dp))
+                                .background(AccentDim)
+                                .padding(horizontal = 8.dp, vertical = 2.dp),
+                        ) {
+                            Text(
+                                "PROX",
+                                style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 1.2.sp),
+                                color = Accent,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                        }
+                    }
                 }
             }
             IconAffordance(
@@ -557,6 +649,13 @@ private fun CarCard(
                 tint = Accent,
                 bg = AccentDim,
                 onClick = onSelect,
+            )
+            Spacer(Modifier.width(8.dp))
+            IconAffordance(
+                icon = Icons.Filled.Settings,
+                tint = Accent,
+                bg = GraphiteHi,
+                onClick = onSettings,
             )
             Spacer(Modifier.width(8.dp))
             IconAffordance(
@@ -845,7 +944,7 @@ private fun RangeChip(miles: Float, batteryPct: Int?) {
 private fun InlineRefreshChip(enabled: Boolean, onClick: () -> Unit) {
     Box(
         modifier = Modifier
-            .size(32.dp)
+            .size(40.dp)
             .clip(CircleShape)
             .background(GraphiteHi)
             .border(1.dp, Hairline, CircleShape)
@@ -857,7 +956,7 @@ private fun InlineRefreshChip(enabled: Boolean, onClick: () -> Unit) {
             Icons.Filled.Refresh,
             contentDescription = "Refresh status",
             tint = Accent,
-            modifier = Modifier.size(16.dp),
+            modifier = Modifier.size(22.dp),
         )
     }
 }
@@ -1035,8 +1134,8 @@ private fun ActionGrid(
     onPortClose: () -> Unit,
     onVentWindows: () -> Unit,
     onCloseWindows: () -> Unit,
-    onVolumeDown: () -> Unit,
-    onVolumeUp: () -> Unit,
+    onComfort: () -> Unit,
+    onAdvanced: () -> Unit,
 ) {
     SectionLabel("Controls")
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1109,17 +1208,17 @@ private fun ActionGrid(
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
             ActionTile(
                 modifier = Modifier.weight(1f),
-                icon = Icons.AutoMirrored.Filled.VolumeDown,
-                label = "Volume −",
+                icon = Icons.Filled.Thermostat,
+                label = "Comfort",
                 enabled = infotainmentEnabled,
-                onClick = onVolumeDown,
+                onClick = onComfort,
             )
             ActionTile(
                 modifier = Modifier.weight(1f),
-                icon = Icons.AutoMirrored.Filled.VolumeUp,
-                label = "Volume +",
+                icon = Icons.Filled.Tune,
+                label = "Advanced",
                 enabled = infotainmentEnabled,
-                onClick = onVolumeUp,
+                onClick = onAdvanced,
             )
         }
     }
@@ -1200,7 +1299,10 @@ private fun SecondaryButton(
 // region — Vehicle status card
 
 @Composable
-private fun VehicleStatusCard(snapshot: TeslaSession.VehicleStatusSnapshot?) {
+private fun VehicleStatusCard(
+    snapshot: TeslaSession.VehicleStatusSnapshot?,
+    vehicleData: TeslaSession.VehicleDataSnapshot?,
+) {
     SectionLabel("Vehicle status")
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -1220,7 +1322,13 @@ private fun VehicleStatusCard(snapshot: TeslaSession.VehicleStatusSnapshot?) {
             val s = snapshot.status
             val closures = s.closureStatuses
             val tonneauPct = s.detailedClosureStatus.tonneauPercentOpen
+            val cs = vehicleData?.data?.chargeState
+            val rangeText = cs?.let { rangeAndBatteryText(it) }
             Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (rangeText != null) {
+                    StatusRow("Range", rangeText, tone = Tone.Good)
+                    Divider()
+                }
                 StatusRow("Lock", lockLabel(s.vehicleLockState), tone = lockTone(s.vehicleLockState))
                 StatusRow("Sleep", sleepLabel(s.vehicleSleepStatus), tone = sleepTone(s.vehicleSleepStatus))
                 StatusRow("User presence", userLabel(s.userPresence), tone = userTone(s.userPresence))
@@ -1604,6 +1712,14 @@ private fun closureLabel(v: Vcsec.ClosureState_E): String = when (v) {
     else -> v.name
 }
 
+private fun rangeAndBatteryText(cs: Vehicle.ChargeState): String? {
+    val hasRange = cs.hasBatteryRange() || cs.hasEstBatteryRange()
+    if (!hasRange) return null
+    val miles = if (cs.hasEstBatteryRange()) cs.estBatteryRange else cs.batteryRange
+    val pct = if (cs.hasBatteryLevel()) cs.batteryLevel else null
+    return "${miles.toInt()} mi" + (pct?.let { " · ${it}%" } ?: "")
+}
+
 private fun closureTone(v: Vcsec.ClosureState_E): Tone = when (v) {
     Vcsec.ClosureState_E.CLOSURESTATE_CLOSED -> Tone.Good
     Vcsec.ClosureState_E.CLOSURESTATE_OPEN -> Tone.Warn
@@ -1612,6 +1728,988 @@ private fun closureTone(v: Vcsec.ClosureState_E): Tone = when (v) {
     Vcsec.ClosureState_E.CLOSURESTATE_CLOSING -> Tone.Warn
     Vcsec.ClosureState_E.CLOSURESTATE_FAILED_UNLATCH -> Tone.Bad
     else -> Tone.Neutral
+}
+
+// endregion
+
+// region — Subscreen scaffolding
+
+@Composable
+private fun SubCard(content: @Composable ColumnScope.() -> Unit) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        color = Graphite,
+        border = androidx.compose.foundation.BorderStroke(1.dp, Hairline),
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            content = content,
+        )
+    }
+}
+
+@Composable
+private fun PillBtn(
+    text: String,
+    selected: Boolean,
+    enabled: Boolean,
+    modifier: Modifier = Modifier,
+    selectedBackground: Color = AccentDim,
+    selectedForeground: Color = Accent,
+    onClick: () -> Unit,
+) {
+    val bg = if (selected) selectedBackground else GraphiteHi
+    val fg = if (selected) selectedForeground else MaterialTheme.colorScheme.onBackground
+    Box(
+        modifier = modifier
+            .height(38.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(bg)
+            .border(1.dp, Hairline, RoundedCornerShape(10.dp))
+            .clickable(enabled = enabled, onClick = onClick)
+            .alpha(if (enabled) 1f else 0.5f),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text,
+            style = MaterialTheme.typography.labelMedium,
+            color = if (enabled) fg else TextMuted,
+        )
+    }
+}
+
+@Composable
+private fun SubLabel(text: String) {
+    Text(
+        text,
+        style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 1.2.sp),
+        color = TextMuted,
+    )
+}
+
+// endregion
+
+// region — Comfort subscreen
+
+@Composable
+private fun ComfortScreen(
+    enabled: Boolean,
+    vehicleData: TeslaSession.VehicleDataSnapshot?,
+    onBack: () -> Unit,
+    run: (suspend () -> Unit) -> Unit,
+    session: TeslaSession,
+) {
+    val climate = vehicleData?.data?.climateState
+    val driverTempC = if (climate?.hasDriverTempSetting() == true) climate.driverTempSetting else 21f
+    val passengerTempC = if (climate?.hasPassengerTempSetting() == true) climate.passengerTempSetting else driverTempC
+    val climateOn = climate?.hasIsClimateOn() == true && climate.isClimateOn
+    val stwHeat = climate?.hasSteeringWheelHeater() == true && climate.steeringWheelHeater
+    val bio = climate?.hasBioweaponModeOn() == true && climate.bioweaponModeOn
+    val precondMax = climate?.hasIsPreconditioning() == true && climate.isPreconditioning
+
+    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        BackPill(label = "Controls", onClick = onBack)
+
+        SectionLabel("Climate")
+        SubCard {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                ActionTile(
+                    modifier = Modifier.weight(1f),
+                    icon = Icons.Filled.Whatshot,
+                    label = if (climateOn) "Climate ON" else "Turn ON",
+                    enabled = enabled,
+                    accent = if (climateOn) Success else Accent,
+                    onClick = { run { session.climateOn() } },
+                )
+                ActionTile(
+                    modifier = Modifier.weight(1f),
+                    icon = Icons.Filled.AcUnit,
+                    label = "Turn OFF",
+                    enabled = enabled,
+                    onClick = { run { session.climateOff() } },
+                )
+            }
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    SubLabel("DRIVER / PASSENGER")
+                    Text(
+                        "${"%.1f".format(driverTempC)}°C  ·  ${"%.1f".format(passengerTempC)}°C",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onBackground,
+                    )
+                }
+                Row(
+                    modifier = Modifier.weight(1f),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    val cool = 20.0f
+                    val warm = (72f - 32f) * 5f / 9f
+                    PillBtn(
+                        modifier = Modifier.weight(1f),
+                        text = "68",
+                        selected = false,
+                        enabled = enabled,
+                        onClick = {
+                            run { session.setClimateTemperature(cool, cool) }
+                        },
+                    )
+                    PillBtn(
+                        modifier = Modifier.weight(1f),
+                        text = "72",
+                        selected = false,
+                        enabled = enabled,
+                        onClick = {
+                            run { session.setClimateTemperature(warm, warm) }
+                        },
+                    )
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                PillBtn(
+                    modifier = Modifier.weight(1f),
+                    text = "Wheel heat: " + if (stwHeat) "ON" else "OFF",
+                    selected = stwHeat,
+                    enabled = enabled,
+                    onClick = { run { session.setSteeringWheelHeater(!stwHeat) } },
+                )
+                PillBtn(
+                    modifier = Modifier.weight(1f),
+                    text = "Precond Max: " + if (precondMax) "ON" else "OFF",
+                    selected = precondMax,
+                    enabled = enabled,
+                    onClick = { run { session.setPreconditioningMax(!precondMax) } },
+                )
+            }
+            PillBtn(
+                modifier = Modifier.fillMaxWidth(),
+                text = "Bioweapon defense: " + if (bio) "ON" else "OFF",
+                selected = bio,
+                enabled = enabled,
+                onClick = { run { session.setBioweaponMode(!bio) } },
+            )
+        }
+
+        SectionLabel("Audio")
+        SubCard {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                ActionTile(
+                    modifier = Modifier.weight(1f),
+                    icon = Icons.AutoMirrored.Filled.VolumeDown,
+                    label = "Volume −",
+                    enabled = enabled,
+                    onClick = { run { session.bumpVolume(-1) } },
+                )
+                ActionTile(
+                    modifier = Modifier.weight(1f),
+                    icon = Icons.AutoMirrored.Filled.VolumeUp,
+                    label = "Volume +",
+                    enabled = enabled,
+                    onClick = { run { session.bumpVolume(1) } },
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                ActionTile(
+                    modifier = Modifier.weight(1f),
+                    icon = Icons.Filled.SkipPrevious,
+                    label = "Prev track",
+                    enabled = enabled,
+                    onClick = { run { session.mediaPreviousTrack() } },
+                )
+                ActionTile(
+                    modifier = Modifier.weight(1f),
+                    icon = Icons.Filled.PlayArrow,
+                    label = "Play / Pause",
+                    enabled = enabled,
+                    onClick = { run { session.mediaTogglePlayback() } },
+                )
+                ActionTile(
+                    modifier = Modifier.weight(1f),
+                    icon = Icons.Filled.SkipNext,
+                    label = "Next track",
+                    enabled = enabled,
+                    onClick = { run { session.mediaNextTrack() } },
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                ActionTile(
+                    modifier = Modifier.weight(1f),
+                    icon = Icons.Filled.SkipPrevious,
+                    label = "Prev favorite",
+                    enabled = enabled,
+                    onClick = { run { session.mediaPreviousFavorite() } },
+                )
+                ActionTile(
+                    modifier = Modifier.weight(1f),
+                    icon = Icons.Filled.SkipNext,
+                    label = "Next favorite",
+                    enabled = enabled,
+                    onClick = { run { session.mediaNextFavorite() } },
+                )
+            }
+        }
+
+        SectionLabel("Seats")
+        SubCard {
+            SeatRow(
+                label = "Driver heat",
+                current = climate?.seatHeaterLeftIfHas(),
+                enabled = enabled,
+                onSet = { lvl -> run { session.setSeatHeater(TeslaSession.SeatPosition.FRONT_LEFT, lvl) } },
+            )
+            SeatRow(
+                label = "Passenger heat",
+                current = climate?.seatHeaterRightIfHas(),
+                enabled = enabled,
+                onSet = { lvl -> run { session.setSeatHeater(TeslaSession.SeatPosition.FRONT_RIGHT, lvl) } },
+            )
+            Divider()
+            SeatRow(
+                label = "Rear left heat",
+                current = climate?.seatHeaterRearLeftIfHas(),
+                enabled = enabled,
+                onSet = { lvl -> run { session.setSeatHeater(TeslaSession.SeatPosition.REAR_LEFT, lvl) } },
+            )
+            SeatRow(
+                label = "Rear center heat",
+                current = climate?.seatHeaterRearCenterIfHas(),
+                enabled = enabled,
+                onSet = { lvl -> run { session.setSeatHeater(TeslaSession.SeatPosition.REAR_CENTER, lvl) } },
+            )
+            SeatRow(
+                label = "Rear right heat",
+                current = climate?.seatHeaterRearRightIfHas(),
+                enabled = enabled,
+                onSet = { lvl -> run { session.setSeatHeater(TeslaSession.SeatPosition.REAR_RIGHT, lvl) } },
+            )
+            Divider()
+            SeatCoolerRow(
+                label = "Driver cool",
+                current = climate?.seatFanFrontLeftIfHas(),
+                enabled = enabled,
+                onSet = { lvl -> run { session.setSeatCooler(TeslaSession.SeatPosition.FRONT_LEFT, lvl) } },
+            )
+            SeatCoolerRow(
+                label = "Passenger cool",
+                current = climate?.seatFanFrontRightIfHas(),
+                enabled = enabled,
+                onSet = { lvl -> run { session.setSeatCooler(TeslaSession.SeatPosition.FRONT_RIGHT, lvl) } },
+            )
+            Divider()
+            val autoLeft = climate?.hasAutoSeatClimateLeft() == true && climate.autoSeatClimateLeft
+            val autoRight = climate?.hasAutoSeatClimateRight() == true && climate.autoSeatClimateRight
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                PillBtn(
+                    modifier = Modifier.weight(1f),
+                    text = "Auto driver: " + if (autoLeft) "ON" else "OFF",
+                    selected = autoLeft,
+                    enabled = enabled,
+                    onClick = { run { session.setAutoSeatClimate(TeslaSession.SeatPosition.FRONT_LEFT, !autoLeft) } },
+                )
+                PillBtn(
+                    modifier = Modifier.weight(1f),
+                    text = "Auto passenger: " + if (autoRight) "ON" else "OFF",
+                    selected = autoRight,
+                    enabled = enabled,
+                    onClick = { run { session.setAutoSeatClimate(TeslaSession.SeatPosition.FRONT_RIGHT, !autoRight) } },
+                )
+            }
+        }
+
+        SectionLabel("Climate keeper")
+        SubCard {
+            val current = climate?.climateKeeperMode?.typeCase
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                ClimateKeeperBtn("Off", current, Vehicle.ClimateState.ClimateKeeperMode.TypeCase.OFF,
+                    CarServer.HvacClimateKeeperAction.ClimateKeeperAction_E.ClimateKeeperAction_Off,
+                    enabled, run, session, Modifier.weight(1f))
+                ClimateKeeperBtn("On", current, Vehicle.ClimateState.ClimateKeeperMode.TypeCase.ON,
+                    CarServer.HvacClimateKeeperAction.ClimateKeeperAction_E.ClimateKeeperAction_On,
+                    enabled, run, session, Modifier.weight(1f))
+                ClimateKeeperBtn("Dog", current, Vehicle.ClimateState.ClimateKeeperMode.TypeCase.DOG,
+                    CarServer.HvacClimateKeeperAction.ClimateKeeperAction_E.ClimateKeeperAction_Dog,
+                    enabled, run, session, Modifier.weight(1f))
+                ClimateKeeperBtn("Camp", current, Vehicle.ClimateState.ClimateKeeperMode.TypeCase.PARTY,
+                    CarServer.HvacClimateKeeperAction.ClimateKeeperAction_E.ClimateKeeperAction_Camp,
+                    enabled, run, session, Modifier.weight(1f))
+            }
+        }
+
+        Spacer(Modifier.height(8.dp))
+    }
+}
+
+@Composable
+private fun SeatRow(
+    label: String,
+    current: Int?,
+    enabled: Boolean,
+    onSet: (TeslaSession.HeaterLevel) -> Unit,
+) {
+    var optimistic by remember { mutableStateOf<Int?>(null) }
+    val displayed = current ?: optimistic ?: 0
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        SubLabel(label.uppercase())
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+            heaterLevels.forEachIndexed { idx, (text, lvl) ->
+                val active = idx > 0
+                PillBtn(
+                    modifier = Modifier.weight(1f),
+                    text = text,
+                    selected = displayed == idx,
+                    enabled = enabled,
+                    selectedBackground = if (active) DangerDim else AccentDim,
+                    selectedForeground = if (active) Danger else Accent,
+                    onClick = {
+                        optimistic = idx
+                        onSet(lvl)
+                    },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SeatCoolerRow(
+    label: String,
+    current: Int?,
+    enabled: Boolean,
+    onSet: (TeslaSession.CoolerLevel) -> Unit,
+) {
+    var optimistic by remember { mutableStateOf<Int?>(null) }
+    val displayed = current ?: optimistic ?: 0
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        SubLabel(label.uppercase())
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+            coolerLevels.forEachIndexed { idx, (text, lvl) ->
+                val active = idx > 0
+                PillBtn(
+                    modifier = Modifier.weight(1f),
+                    text = text,
+                    selected = displayed == idx,
+                    enabled = enabled,
+                    selectedBackground = if (active) InfoDim else AccentDim,
+                    selectedForeground = if (active) Info else Accent,
+                    onClick = {
+                        optimistic = idx
+                        onSet(lvl)
+                    },
+                )
+            }
+        }
+    }
+}
+
+// Proto integer values for the Climate state seat levels:
+//   SeatHeaterLevel_E: Off=0, Low=1, Med=2, High=3
+//   SeatCoolingLevel_E: Off=0, Low=1, Med=2, High=3
+private val heaterLevels = listOf(
+    "Off" to TeslaSession.HeaterLevel.OFF,
+    "Low" to TeslaSession.HeaterLevel.LOW,
+    "Med" to TeslaSession.HeaterLevel.MED,
+    "High" to TeslaSession.HeaterLevel.HIGH,
+)
+private val coolerLevels = listOf(
+    "Off" to TeslaSession.CoolerLevel.OFF,
+    "Low" to TeslaSession.CoolerLevel.LOW,
+    "Med" to TeslaSession.CoolerLevel.MED,
+    "High" to TeslaSession.CoolerLevel.HIGH,
+)
+
+private fun Vehicle.ClimateState.seatHeaterLeftIfHas(): Int? =
+    if (hasSeatHeaterLeft()) seatHeaterLeft else null
+
+private fun Vehicle.ClimateState.seatHeaterRightIfHas(): Int? =
+    if (hasSeatHeaterRight()) seatHeaterRight else null
+
+private fun Vehicle.ClimateState.seatHeaterRearLeftIfHas(): Int? =
+    if (hasSeatHeaterRearLeft()) seatHeaterRearLeft else null
+
+private fun Vehicle.ClimateState.seatHeaterRearCenterIfHas(): Int? =
+    if (hasSeatHeaterRearCenter()) seatHeaterRearCenter else null
+
+private fun Vehicle.ClimateState.seatHeaterRearRightIfHas(): Int? =
+    if (hasSeatHeaterRearRight()) seatHeaterRearRight else null
+
+private fun Vehicle.ClimateState.seatFanFrontLeftIfHas(): Int? =
+    if (hasSeatFanFrontLeft()) seatFanFrontLeft else null
+
+private fun Vehicle.ClimateState.seatFanFrontRightIfHas(): Int? =
+    if (hasSeatFanFrontRight()) seatFanFrontRight else null
+
+// endregion
+
+// region — Advanced subscreen
+
+@Composable
+private fun AdvancedScreen(
+    enabled: Boolean,
+    vehicleData: TeslaSession.VehicleDataSnapshot?,
+    onBack: () -> Unit,
+    run: (suspend () -> Unit) -> Unit,
+    session: TeslaSession,
+) {
+    val cs = vehicleData?.data?.chargeState
+    val climate = vehicleData?.data?.climateState
+    val tires = vehicleData?.data?.tirePressureState
+    val media = vehicleData?.data?.mediaState
+
+    val currentLimit = cs?.takeIf { it.hasChargeLimitSoc() }?.chargeLimitSoc
+    val currentAmps = cs?.takeIf { it.hasChargingAmps() }?.chargingAmps
+    val ampsMax = cs?.takeIf { it.hasChargeCurrentRequestMax() }?.chargeCurrentRequestMax ?: 48
+    val charging = cs?.chargingState?.typeCase ==
+        Vehicle.ChargeState.ChargingState.TypeCase.CHARGING
+
+    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        BackPill(label = "Controls", onClick = onBack)
+
+        SectionLabel("Charging")
+        SubCard {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                ActionTile(
+                    modifier = Modifier.weight(1f),
+                    icon = Icons.Filled.Bolt,
+                    label = "Start charge",
+                    enabled = enabled,
+                    accent = if (charging) Success else Accent,
+                    onClick = { run { session.chargeStart() } },
+                )
+                ActionTile(
+                    modifier = Modifier.weight(1f),
+                    icon = Icons.Filled.Close,
+                    label = "Stop charge",
+                    enabled = enabled,
+                    onClick = { run { session.chargeStop() } },
+                )
+            }
+            SubLabel("CHARGE LIMIT" + (currentLimit?.let { " · $it%" } ?: ""))
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                for (pct in listOf(50, 60, 70, 80, 90, 100)) {
+                    PillBtn(
+                        modifier = Modifier.weight(1f),
+                        text = "$pct",
+                        selected = currentLimit == pct,
+                        enabled = enabled,
+                        onClick = { run { session.setChargeLimit(pct) } },
+                    )
+                }
+            }
+            SubLabel("CHARGING AMPS" + (currentAmps?.let { " · ${it}A" } ?: ""))
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                for (a in ampsPresetsFor(ampsMax)) {
+                    PillBtn(
+                        modifier = Modifier.weight(1f),
+                        text = "${a}A",
+                        selected = currentAmps == a,
+                        enabled = enabled,
+                        onClick = { run { session.setChargingAmps(a) } },
+                    )
+                }
+            }
+        }
+
+        SectionLabel("Cabin overheat protection")
+        SubCard {
+            val cop = climate?.takeIf { it.hasCabinOverheatProtection() }?.cabinOverheatProtection
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                PillBtn(
+                    modifier = Modifier.weight(1f),
+                    text = "Off",
+                    selected = cop == Vehicle.ClimateState.CabinOverheatProtection_E.CabinOverheatProtectionOff,
+                    enabled = enabled,
+                    onClick = { run { session.setCabinOverheatProtection(on = false) } },
+                )
+                PillBtn(
+                    modifier = Modifier.weight(1f),
+                    text = "On",
+                    selected = cop == Vehicle.ClimateState.CabinOverheatProtection_E.CabinOverheatProtectionOn,
+                    enabled = enabled,
+                    onClick = { run { session.setCabinOverheatProtection(on = true) } },
+                )
+                PillBtn(
+                    modifier = Modifier.weight(1f),
+                    text = "Fan only",
+                    selected = cop == Vehicle.ClimateState.CabinOverheatProtection_E.CabinOverheatProtectionFanOnly,
+                    enabled = enabled,
+                    onClick = { run { session.setCabinOverheatProtection(on = true, fanOnly = true) } },
+                )
+            }
+        }
+
+        SectionLabel("Vehicle")
+        SubCard {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                ActionTile(
+                    modifier = Modifier.weight(1f),
+                    icon = Icons.Filled.FlashOn,
+                    label = "Flash lights",
+                    enabled = enabled,
+                    onClick = { run { session.flashLights() } },
+                )
+                ActionTile(
+                    modifier = Modifier.weight(1f),
+                    icon = Icons.Filled.NotificationsActive,
+                    label = "Honk horn",
+                    enabled = enabled,
+                    onClick = { run { session.honkHorn() } },
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                ActionTile(
+                    modifier = Modifier.weight(1f),
+                    icon = Icons.Filled.Security,
+                    label = "Sentry ON",
+                    enabled = enabled,
+                    accent = Success,
+                    onClick = { run { session.setSentryMode(true) } },
+                )
+                ActionTile(
+                    modifier = Modifier.weight(1f),
+                    icon = Icons.Filled.Security,
+                    label = "Sentry OFF",
+                    enabled = enabled,
+                    onClick = { run { session.setSentryMode(false) } },
+                )
+            }
+        }
+
+        SectionLabel("Status")
+        AdvancedStatusCard(cs, climate, tires, media)
+
+        Spacer(Modifier.height(8.dp))
+    }
+}
+
+@Composable
+private fun ClimateKeeperBtn(
+    label: String,
+    currentCase: Vehicle.ClimateState.ClimateKeeperMode.TypeCase?,
+    matchCase: Vehicle.ClimateState.ClimateKeeperMode.TypeCase,
+    sendValue: CarServer.HvacClimateKeeperAction.ClimateKeeperAction_E,
+    enabled: Boolean,
+    run: (suspend () -> Unit) -> Unit,
+    session: TeslaSession,
+    modifier: Modifier = Modifier,
+) {
+    PillBtn(
+        modifier = modifier,
+        text = label,
+        selected = currentCase == matchCase,
+        enabled = enabled,
+        onClick = { run { session.setClimateKeeperMode(sendValue) } },
+    )
+}
+
+private fun ampsPresetsFor(max: Int): List<Int> {
+    val ceil = max.coerceIn(8, 48)
+    return listOf(8, 16, 24, 32, 40, 48).filter { it <= ceil }.ifEmpty { listOf(ceil) }
+}
+
+@Composable
+private fun AdvancedStatusCard(
+    cs: Vehicle.ChargeState?,
+    climate: Vehicle.ClimateState?,
+    tires: Vehicle.TirePressureState?,
+    media: Vehicle.MediaState?,
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        color = Graphite,
+        border = androidx.compose.foundation.BorderStroke(1.dp, Hairline),
+    ) {
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            if (cs == null && climate == null && tires == null && media == null) {
+                Text("Waiting for vehicle data…", style = MaterialTheme.typography.bodySmall, color = TextMuted)
+                return@Column
+            }
+            if (cs != null) {
+                StatusRow("Charging", chargingStateLabel(cs), tone = chargingTone(cs))
+                if (cs.hasBatteryLevel()) StatusRow("Battery", "${cs.batteryLevel}%", tone = Tone.Neutral)
+                if (cs.hasUsableBatteryLevel()) StatusRow("Usable", "${cs.usableBatteryLevel}%", tone = Tone.Neutral)
+                if (cs.hasEstBatteryRange()) StatusRow("Range", "${cs.estBatteryRange.toInt()} mi", tone = Tone.Neutral)
+                if (cs.hasChargeLimitSoc()) StatusRow("Limit", "${cs.chargeLimitSoc}%", tone = Tone.Neutral)
+                if (cs.hasChargerPower() && cs.chargerPower > 0)
+                    StatusRow("Power", "${cs.chargerPower} kW", tone = Tone.Neutral)
+                if (cs.hasChargerActualCurrent() && cs.chargerActualCurrent > 0)
+                    StatusRow("Current", "${cs.chargerActualCurrent} A", tone = Tone.Neutral)
+                if (cs.hasMinutesToFullCharge() && cs.minutesToFullCharge > 0)
+                    StatusRow("Time to full", formatMinutes(cs.minutesToFullCharge), tone = Tone.Neutral)
+                Divider()
+            }
+            if (climate != null) {
+                if (climate.hasInsideTempCelsius())
+                    StatusRow("Inside", "${"%.1f".format(climate.insideTempCelsius)}°C", tone = Tone.Neutral)
+                if (climate.hasOutsideTempCelsius())
+                    StatusRow("Outside", "${"%.1f".format(climate.outsideTempCelsius)}°C", tone = Tone.Neutral)
+                if (climate.hasDriverTempSetting())
+                    StatusRow("Driver set", "${"%.1f".format(climate.driverTempSetting)}°C", tone = Tone.Neutral)
+                if (climate.hasPassengerTempSetting())
+                    StatusRow("Passenger set", "${"%.1f".format(climate.passengerTempSetting)}°C", tone = Tone.Neutral)
+                if (climate.hasFanStatus())
+                    StatusRow("Fan", "${climate.fanStatus}/10", tone = Tone.Neutral)
+                Divider()
+            }
+            if (tires != null && hasAnyTire(tires)) {
+                if (tires.hasTpmsPressureFl())
+                    StatusRow("Tire FL", "${"%.2f".format(tires.tpmsPressureFl)} bar", tone = Tone.Neutral)
+                if (tires.hasTpmsPressureFr())
+                    StatusRow("Tire FR", "${"%.2f".format(tires.tpmsPressureFr)} bar", tone = Tone.Neutral)
+                if (tires.hasTpmsPressureRl())
+                    StatusRow("Tire RL", "${"%.2f".format(tires.tpmsPressureRl)} bar", tone = Tone.Neutral)
+                if (tires.hasTpmsPressureRr())
+                    StatusRow("Tire RR", "${"%.2f".format(tires.tpmsPressureRr)} bar", tone = Tone.Neutral)
+                Divider()
+            }
+            if (media != null) {
+                if (media.hasAudioVolume() && media.hasAudioVolumeMax())
+                    StatusRow("Volume", "${"%.1f".format(media.audioVolume)} / ${"%.1f".format(media.audioVolumeMax)}", tone = Tone.Neutral)
+                if (media.hasNowPlayingTitle() && media.nowPlayingTitle.isNotBlank())
+                    StatusRow("Title", media.nowPlayingTitle, tone = Tone.Neutral)
+                if (media.hasNowPlayingArtist() && media.nowPlayingArtist.isNotBlank())
+                    StatusRow("Artist", media.nowPlayingArtist, tone = Tone.Neutral)
+            }
+        }
+    }
+}
+
+private fun hasAnyTire(t: Vehicle.TirePressureState): Boolean =
+    t.hasTpmsPressureFl() || t.hasTpmsPressureFr() || t.hasTpmsPressureRl() || t.hasTpmsPressureRr()
+
+private fun chargingStateLabel(cs: Vehicle.ChargeState): String = when (cs.chargingState.typeCase) {
+    Vehicle.ChargeState.ChargingState.TypeCase.DISCONNECTED -> "Disconnected"
+    Vehicle.ChargeState.ChargingState.TypeCase.NOPOWER -> "No power"
+    Vehicle.ChargeState.ChargingState.TypeCase.STARTING -> "Starting"
+    Vehicle.ChargeState.ChargingState.TypeCase.CHARGING -> "Charging"
+    Vehicle.ChargeState.ChargingState.TypeCase.COMPLETE -> "Complete"
+    Vehicle.ChargeState.ChargingState.TypeCase.STOPPED -> "Stopped"
+    Vehicle.ChargeState.ChargingState.TypeCase.CALIBRATING -> "Calibrating"
+    else -> "Unknown"
+}
+
+private fun chargingTone(cs: Vehicle.ChargeState): Tone = when (cs.chargingState.typeCase) {
+    Vehicle.ChargeState.ChargingState.TypeCase.CHARGING -> Tone.Good
+    Vehicle.ChargeState.ChargingState.TypeCase.COMPLETE -> Tone.Good
+    Vehicle.ChargeState.ChargingState.TypeCase.STOPPED -> Tone.Warn
+    Vehicle.ChargeState.ChargingState.TypeCase.NOPOWER -> Tone.Warn
+    else -> Tone.Neutral
+}
+
+private fun formatMinutes(min: Int): String {
+    if (min <= 0) return "—"
+    val h = min / 60
+    val m = min % 60
+    return if (h > 0) "${h}h ${m}m" else "${m}m"
+}
+
+// endregion
+
+// region — Proximity settings
+
+@Composable
+private fun ProximitySettingsScreen(
+    car: SavedCar,
+    onBack: () -> Unit,
+) {
+    val ctx = LocalContext.current
+    val store = remember(car.vin) { CarStore(ctx) }
+    var cfg by remember(car.vin) { mutableStateOf(store.getProximity(car.vin)) }
+    val live by ProximityRegistry.live.collectAsState()
+    val serviceState by ProximityRegistry.serviceState.collectAsState()
+    val liveState = live[car.vin]
+
+    val notifPermLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { /* harmless if denied — notification just won't be visible */ }
+
+    fun persist(newCfg: ProximityConfig) {
+        cfg = newCfg
+        store.setProximity(car.vin, newCfg)
+        ProximityRegistry.refresh(ctx)
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        BackPill(label = "Vehicles", onClick = onBack)
+
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(20.dp),
+            color = Graphite,
+            border = androidx.compose.foundation.BorderStroke(1.dp, Hairline),
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(
+                    "Settings",
+                    style = MaterialTheme.typography.titleLarge,
+                    color = MaterialTheme.colorScheme.onBackground,
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    "${car.name} · VIN ••••••${car.vin.takeLast(6)}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = TextMuted,
+                    fontFamily = FontFamily.Monospace,
+                )
+            }
+        }
+
+        SectionLabel("Proximity unlock")
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(20.dp),
+            color = Graphite,
+            border = androidx.compose.foundation.BorderStroke(1.dp, Hairline),
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            "Enable",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onBackground,
+                        )
+                        Text(
+                            "Auto-unlock when this phone approaches the car, and auto-lock when it walks away.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextSecondary,
+                        )
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Switch(
+                        checked = cfg.enabled,
+                        onCheckedChange = { on ->
+                            if (on &&
+                                Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                                ctx.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=
+                                PackageManager.PERMISSION_GRANTED
+                            ) {
+                                notifPermLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                            }
+                            persist(cfg.copy(enabled = on))
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Ink,
+                            checkedTrackColor = Accent,
+                            uncheckedTrackColor = GraphiteHi,
+                            uncheckedBorderColor = Hairline,
+                        ),
+                    )
+                }
+            }
+        }
+
+        // Lock-delay warning, prominent so users don't expect snappy auto-lock.
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(20.dp),
+            color = Graphite,
+            border = androidx.compose.foundation.BorderStroke(1.dp, Warning.copy(alpha = 0.5f)),
+        ) {
+            Row(
+                modifier = Modifier.padding(14.dp),
+                verticalAlignment = Alignment.Top,
+            ) {
+                Icon(
+                    Icons.Filled.Whatshot,
+                    contentDescription = null,
+                    tint = Warning,
+                    modifier = Modifier.size(20.dp),
+                )
+                Spacer(Modifier.width(10.dp))
+                Column {
+                    Text(
+                        "Auto-lock has a Tesla-side delay",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = Warning,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        "The car only broadcasts BLE while sleeping. After you drive off, " +
+                            "the car stays awake for several minutes before sleeping again — auto-lock fires " +
+                            "shortly after that point, not the instant you walk away.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary,
+                    )
+                }
+            }
+        }
+
+        SectionLabel("Calibration", trailing = serviceStateLabel(serviceState))
+        SubCard {
+            // Live readout — helps user pick thresholds.
+            val emaInt = liveState?.ema?.roundToInt()
+            val lastRssi = liveState?.lastRssi
+            val fsmStateText = when (liveState?.fsmState) {
+                ProximityFsm.State.Near -> "NEAR"
+                ProximityFsm.State.Far, null -> "FAR"
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        "Live RSSI",
+                        style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 1.2.sp),
+                        color = TextMuted,
+                    )
+                    Text(
+                        when {
+                            emaInt != null -> "${emaInt} dBm (smoothed)"
+                            cfg.enabled -> "Waiting for beacon…"
+                            else -> "Enable to calibrate"
+                        },
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onBackground,
+                        fontFamily = FontFamily.Monospace,
+                    )
+                    if (lastRssi != null) {
+                        Text(
+                            "Last sample $lastRssi dBm",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = TextMuted,
+                            fontFamily = FontFamily.Monospace,
+                        )
+                    }
+                }
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(GraphiteHi)
+                        .border(1.dp, Hairline, RoundedCornerShape(999.dp))
+                        .padding(horizontal = 10.dp, vertical = 4.dp),
+                ) {
+                    Text(
+                        fsmStateText,
+                        style = MaterialTheme.typography.labelMedium.copy(letterSpacing = 1.6.sp),
+                        color = if (fsmStateText == "NEAR") Success else TextMuted,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+            }
+
+            val unlockMin = ProximityConfig.MIN_RSSI + ProximityConfig.MIN_HYSTERESIS_DB
+            SubLabel("UNLOCK WHEN SIGNAL ≥ ${cfg.unlockRssi} dBm (stronger = closer)")
+            Slider(
+                value = cfg.unlockRssi.toFloat().coerceIn(unlockMin.toFloat(), ProximityConfig.MAX_RSSI.toFloat()),
+                onValueChange = { v ->
+                    val newUnlock = v.roundToInt()
+                        .coerceIn(unlockMin, ProximityConfig.MAX_RSSI)
+                    val newLock = min(cfg.lockRssi, newUnlock - ProximityConfig.MIN_HYSTERESIS_DB)
+                        .coerceAtLeast(ProximityConfig.MIN_RSSI)
+                    persist(cfg.copy(unlockRssi = newUnlock, lockRssi = newLock))
+                },
+                valueRange = unlockMin.toFloat()..ProximityConfig.MAX_RSSI.toFloat(),
+                colors = SliderDefaults.colors(
+                    thumbColor = Accent,
+                    activeTrackColor = Accent,
+                    inactiveTrackColor = GraphiteHi,
+                ),
+            )
+
+            val lockMax = cfg.unlockRssi - ProximityConfig.MIN_HYSTERESIS_DB
+            SubLabel("LOCK WHEN SIGNAL ≤ ${cfg.lockRssi} dBm (weaker = farther)")
+            Slider(
+                value = cfg.lockRssi.toFloat().coerceIn(ProximityConfig.MIN_RSSI.toFloat(), lockMax.toFloat()),
+                onValueChange = { v ->
+                    val newLock = v.roundToInt()
+                        .coerceIn(ProximityConfig.MIN_RSSI, lockMax)
+                    persist(cfg.copy(lockRssi = newLock))
+                },
+                valueRange = ProximityConfig.MIN_RSSI.toFloat()..lockMax.toFloat(),
+                colors = SliderDefaults.colors(
+                    thumbColor = Accent,
+                    activeTrackColor = Accent,
+                    inactiveTrackColor = GraphiteHi,
+                ),
+            )
+
+            SubLabel("APPROACH DWELL · ${(cfg.enterDwellMs / 1000.0).formatSec()} s")
+            Slider(
+                value = cfg.enterDwellMs.toFloat() / 1000f,
+                onValueChange = { v ->
+                    val newDwell = (max(0.5f, v) * 1000f).toLong()
+                    persist(cfg.copy(enterDwellMs = newDwell))
+                },
+                valueRange = 0.5f..10f,
+                colors = SliderDefaults.colors(
+                    thumbColor = Accent,
+                    activeTrackColor = Accent,
+                    inactiveTrackColor = GraphiteHi,
+                ),
+            )
+
+            SubLabel("DEPART DWELL · ${(cfg.exitDwellMs / 1000.0).formatSec()} s")
+            Slider(
+                value = cfg.exitDwellMs.toFloat() / 1000f,
+                onValueChange = { v ->
+                    val newDwell = (max(5f, v) * 1000f).toLong()
+                    persist(cfg.copy(exitDwellMs = newDwell))
+                },
+                valueRange = 5f..120f,
+                colors = SliderDefaults.colors(
+                    thumbColor = Accent,
+                    activeTrackColor = Accent,
+                    inactiveTrackColor = GraphiteHi,
+                ),
+            )
+        }
+
+        liveState?.lastAction?.let { action ->
+            val ts = liveState.lastActionMs
+            val label = when (action) {
+                ProximityFsm.Action.Unlock -> "Last action: UNLOCK"
+                ProximityFsm.Action.Lock -> "Last action: LOCK"
+            }
+            val nowMs = rememberNowMs()
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                color = Graphite,
+                border = androidx.compose.foundation.BorderStroke(1.dp, Hairline),
+            ) {
+                Row(modifier = Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        if (action == ProximityFsm.Action.Unlock) Icons.Filled.LockOpen else Icons.Filled.Lock,
+                        contentDescription = null,
+                        tint = Accent,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    Text(
+                        label,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onBackground,
+                        modifier = Modifier.weight(1f),
+                    )
+                    if (ts != null) {
+                        val ageSec = ((nowMs - ts) / 1000).coerceAtLeast(0)
+                        Text(
+                            "${ageSec}s ago",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = TextMuted,
+                            fontFamily = FontFamily.Monospace,
+                        )
+                    }
+                }
+            }
+        }
+
+        Spacer(Modifier.height(8.dp))
+    }
+}
+
+private fun Double.formatSec(): String = if (this >= 10) "${this.toInt()}" else "%.1f".format(this)
+
+private fun serviceStateLabel(s: ProximityRegistry.ServiceState): String = when (s) {
+    ProximityRegistry.ServiceState.Stopped -> "off"
+    ProximityRegistry.ServiceState.Scanning -> "scanning"
+    ProximityRegistry.ServiceState.Commanding -> "commanding"
+    ProximityRegistry.ServiceState.Idle -> "idle"
 }
 
 // endregion

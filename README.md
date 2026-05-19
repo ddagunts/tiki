@@ -1,4 +1,8 @@
-# TKey
+<p align="center">
+  <img src="docs/screenshots/logo.png" alt="TKey app icon" width="128">
+</p>
+
+<h1 align="center">TKey</h1>
 
 A phone-only Tesla key for Android. No cloud. No internet. No Google Play Services.
 The only runtime permission the app asks for is **Nearby devices** — that's it.
@@ -19,6 +23,17 @@ app for the small set of things a phone-as-a-key actually needs to do.
   <img src="docs/screenshots/active.png" alt="TKey connected to a Tesla, showing the lock status, controls, and vehicle status grid" width="320">
 </p>
 
+<p align="center">
+  <img src="docs/screenshots/comfort.png" alt="Comfort screen — Climate (with 68 / 72 °F presets), Audio, Seats, Climate keeper" width="240">
+  <img src="docs/screenshots/comfort_seats_keeper.png" alt="Comfort screen continued — Seats and Climate keeper" width="240">
+  <img src="docs/screenshots/advanced.png" alt="Advanced screen — Charging, Cabin overheat protection, Sentry / flash / honk, Status" width="240">
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/settings_disabled.png" alt="Settings screen with Proximity unlock disabled" width="240">
+  <img src="docs/screenshots/settings_proximity.png" alt="Settings screen with Proximity unlock enabled, showing RSSI sliders, live readout, and dwell sliders" width="240">
+</p>
+
 ---
 
 ## What it does
@@ -26,11 +41,22 @@ app for the small set of things a phone-as-a-key actually needs to do.
 Once paired with the car, TKey can:
 
 - **Lock** and **unlock** the doors
-- Open the **frunk**
-- Open and close the **trunk**
-- Open and close the **charge port**
+- **Auto-unlock on approach and auto-lock on departure** when you opt into per-car
+  Proximity unlock *(beta)* — see [Proximity unlock](#proximity-unlock-beta-opt-in) below
+- Open and close the **trunk** and the **charge port**; **vent** and **close** the windows
+- **Climate**: turn climate on/off, set driver / passenger target temperatures (one-tap
+  **68 °F / 72 °F** presets, in addition to whatever the car already has set), toggle
+  bioweapon-defense mode, steering-wheel heat, preconditioning max
+- **Audio / media**: play / pause, next / previous track, next / previous favorite,
+  volume up / down
+- **Seats**: heat and cooler levels for all seats; auto-seat climate
+- **Climate keeper**: Off / On / Dog / Camp modes, with **cabin overheat protection**
+  (Off / On / Fan only)
+- **Charging**: start / stop, charge-limit presets (50–100 %), charging-current limit
+- **Sentry mode** on/off, **flash lights**, **honk horn**
 - Refresh and display **vehicle status** (lock state, sleep state, user presence,
-  individual closures, tonneau on Cybertruck, etc.)
+  individual closures including **frunk** and **tonneau** (Cybertruck),
+  **remaining range / battery %**, etc.)
 - **Auto-reconnect** with backoff whenever the BLE link drops
 
 It runs the BLE leg of the Tesla key protocol end-to-end:
@@ -46,15 +72,65 @@ It runs the BLE leg of the Tesla key protocol end-to-end:
 
 ## What it isn't
 
-- **Not a replacement for the official Tesla app.** It can't get climate, schedule
-  charging, watch sentry video, or talk to the car when you're not standing next to it.
+- **Not a replacement for the official Tesla app.** It can't watch sentry video or talk
+  to the car when you're not standing next to it. Anything that needs Tesla's cloud is
+  out of scope by design.
 - **Not a long-range key.** BLE range is roughly walking-up-to-the-car distance. The car
   also only advertises while asleep — once you're inside or the car is awake from another
   source, it stops broadcasting until it sleeps again.
-- **Not a phone-as-key like the iPhone/Android UWB experience.** No hands-free entry, no
-  passive walk-up. You open the app, you pick the car, you tap a button.
+- **Not a UWB phone-as-key.** Proximity unlock here uses BLE RSSI, which is good enough
+  for "walk up to the car and the doors unlock" but lacks the centimeter-accurate
+  positioning of the iPhone / Android UWB experience.
 - **Not Cybertruck-only or Model-something-only.** It speaks the modern VCSEC protocol that
   all current cars use, but quirks per model/firmware exist and we have what we have.
+
+## Proximity unlock (beta, opt-in)
+
+> [!NOTE]
+> Proximity unlock is a **beta** feature. The hysteresis, dwell, and auto-pause logic
+> have all been exercised on the author's own car, but Bluetooth signal behavior varies
+> wildly between phones, cases, pockets, and garages. Treat the thresholds as something
+> to calibrate per car using the live RSSI readout below, and keep your physical key /
+> phone-app fallback handy.
+
+In a saved car's **Settings**, flip on **Proximity unlock** to get walk-up entry. TKey
+runs a small foreground service that watches the car's BLE beacon, smooths the RSSI with
+an exponential moving average, and dispatches a real RKE unlock when the signal crosses
+your **Unlock RSSI** threshold — and a lock when it drops below your **Lock RSSI**
+threshold.
+
+Both thresholds are sliders in the Settings screen, paired with a **live RSSI readout**
+that updates in real time as you move toward and away from the car so you can calibrate
+to your own keyrings, walls, and pockets. You also get sliders for the **approach** and
+**depart dwell** times — how long the signal has to stay above (or below) the threshold
+before TKey actually fires. Hysteresis between the two thresholds prevents flapping at
+the edge of range, and a built-in 60 s cool-down keeps the FSM from oscillating after a
+fire.
+
+### Auto-pause
+
+TKey doesn't burn battery scanning when nothing's happening. After **10 minutes** with
+no beacon seen and no significant motion from the phone, the proximity service suspends
+scanning entirely and arms Android's `TYPE_SIGNIFICANT_MOTION` trigger sensor. The next
+time you actually move — walk to the car, get up off the couch — scanning resumes
+instantly. While suspended the proximity service contributes essentially nothing to the
+phone's power draw.
+
+The service also stops itself outright the moment no saved car has Proximity unlock
+enabled. Nothing runs when the feature is off.
+
+### Caveats
+
+- **Auto-lock fires only after the car re-sleeps.** Tesla cars only advertise BLE while
+  sleeping; the moment you open a door the car wakes and goes radio-silent until its
+  sleep timer expires (typically several minutes after last activity). Auto-lock needs a
+  fresh weak beacon to fire — which means it triggers shortly after the car has gone
+  back to sleep at its new location, not the instant you walk away. The Settings screen
+  surfaces this caveat in-app.
+- **Range is BLE range.** Roughly the inside of your driveway / garage. Don't expect
+  walk-up unlock from across the street.
+- **Proximity is per-car.** Enable it on the cars you actually use; the others stay in
+  manual-control mode and contribute nothing to scanning load.
 
 ## Privacy & security model
 
@@ -62,22 +138,27 @@ The headline guarantees are easy to verify from this repo and from the manifest:
 
 ### No internet, no cloud
 
-The only runtime permission TKey asks for is **Nearby devices** — the single Android 12+
-permission prompt that covers Bluetooth scanning and Bluetooth connecting. That is the
-*entire* permission ask, full stop.
+The default runtime ask is **Nearby devices** — the single Android 12+ permission prompt
+that covers Bluetooth scanning and Bluetooth connecting. If you turn on Proximity unlock,
+TKey additionally requests the **Notifications** permission so the foreground-service
+notification can be shown. That is the entire runtime surface.
 
-Under the hood, [`AndroidManifest.xml`](app/src/main/AndroidManifest.xml) declares
-exactly those two entries:
+The full manifest ([`AndroidManifest.xml`](app/src/main/AndroidManifest.xml)) is:
 
 ```xml
 <uses-permission android:name="android.permission.BLUETOOTH_SCAN"
                  android:usesPermissionFlags="neverForLocation" />
 <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 ```
 
-Both of these are grouped under the user-facing "Nearby devices" toggle in Android
-Settings. The app declares **nothing else** — no `INTERNET`, no location, no notifications,
-no phone state, no contacts, no foreground service, no background work.
+The two Bluetooth entries are grouped under the user-facing "Nearby devices" toggle in
+Android Settings. The three foreground-service entries are only exercised when Proximity
+unlock is enabled for at least one car — the service stops itself the moment no car has
+the feature on. Notably absent: **no** `INTERNET`, **no** location of any kind, **no**
+phone state, **no** contacts, **no** storage, **no** wake lock, **no** boot-completed.
 
 Because there is no `INTERNET` permission, the app cannot open a socket, fetch a URL,
 ping a server, or post telemetry. This is enforced by Android itself, not by app code —
@@ -139,8 +220,11 @@ or a Model 3 keycard.
 
 TKey is meant to be cheap to leave running:
 
-- **No background work by default.** The app only scans and connects when it's open and
-  the screen is on.
+- **No background work unless you opt in.** With Proximity unlock off (the default),
+  the app only scans and connects when it's open and the screen is on. With Proximity
+  unlock on for at least one car, a foreground service runs — but auto-pauses after
+  10 minutes of no beacons + no motion (see
+  [Proximity unlock § Auto-pause](#auto-pause)).
 - **BLE only.** No periodic Wi-Fi connection, no cellular request, no Play Services
   heartbeat. Once connected, it sends 1 PING-ish frame per heartbeat interval and
   otherwise idles.
@@ -152,7 +236,8 @@ TKey is meant to be cheap to leave running:
 
 The realistic battery impact on a modern Pixel/Galaxy with the app open and a car nearby
 is in the same range as having Bluetooth audio paired but idle — a small fraction of a
-percent per hour.
+percent per hour. With Proximity unlock on, the same number holds while the service is
+actively scanning, and drops near zero while it's paused waiting for motion.
 
 ## Pairing flow
 
@@ -204,6 +289,12 @@ tkey/
 │       ├── MainActivity.kt   Compose screens, theme, components
 │       ├── CarController.kt  scan → connect → handshake → ready FSM
 │       ├── CarStore.kt       saved-car SharedPreferences storage
+│       ├── proximity/        Proximity unlock
+│       │   ├── ProximityConfig.kt    per-car settings (RSSI thresholds, dwell)
+│       │   ├── ProximityFsm.kt       EMA + hysteresis + dwell state machine
+│       │   ├── ProximityRegistry.kt  process-wide bridge between UI and service
+│       │   └── ProximityService.kt   foreground service (single scan loop,
+│       │                             per-VIN FSMs, motion-aware auto-pause)
 │       └── theme/            Color, Theme, Typography
 ├── core/
 │   ├── ble/                  BLE discovery + GATT transport
@@ -224,20 +315,24 @@ tkey/
 
 ## Permissions reference
 
-TKey requests exactly **one** runtime permission, which Android surfaces to you as a
-single "Nearby devices" prompt:
+TKey requests at most **two** runtime permissions: one is always needed, the other is
+only requested if you opt into Proximity unlock.
 
 | Android user-facing prompt | Manifest entries | Why | When asked |
 |---|---|---|---|
 | **Nearby devices** | `BLUETOOTH_SCAN` (with `neverForLocation`), `BLUETOOTH_CONNECT` | Discover the car's BLE beacon and open a GATT link to it | First time you tap a saved car |
+| **Notifications** | `POST_NOTIFICATIONS`, `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_CONNECTED_DEVICE` | Show the persistent "TKey proximity" notification while the proximity service is running | First time you turn Proximity unlock on for a car (Android 13+) |
 
-That's the full list. Concretely, TKey does **not** ask for and the manifest does **not**
-declare any of:
+The three foreground-service permissions in row 2 are install-time on the manifest, but
+the service itself only runs when at least one car has Proximity unlock turned on. With
+the feature off, no service runs and no notification appears.
+
+Concretely, TKey does **not** ask for and the manifest does **not** declare any of:
 
 `INTERNET` · `ACCESS_FINE_LOCATION` · `ACCESS_COARSE_LOCATION` ·
-`ACCESS_BACKGROUND_LOCATION` · `READ_PHONE_STATE` · `POST_NOTIFICATIONS` ·
-`FOREGROUND_SERVICE` · `WAKE_LOCK` · `RECEIVE_BOOT_COMPLETED` · `CAMERA` ·
-`READ_CONTACTS` · `READ_EXTERNAL_STORAGE` · `WRITE_EXTERNAL_STORAGE`.
+`ACCESS_BACKGROUND_LOCATION` · `READ_PHONE_STATE` · `WAKE_LOCK` ·
+`RECEIVE_BOOT_COMPLETED` · `CAMERA` · `READ_CONTACTS` ·
+`READ_EXTERNAL_STORAGE` · `WRITE_EXTERNAL_STORAGE`.
 
 You can verify all of the above yourself by inspecting the installed APK with
 `adb shell dumpsys package com.tkey.debug | grep permission` or by reading
@@ -260,15 +355,22 @@ You can verify all of the above yourself by inspecting the installed APK with
 Best-effort. Things that work today:
 
 - Discovery, connection, session handshake, vehicle status, lock/unlock,
-  frunk/trunk/charge-port, auto-reconnect
+  frunk/trunk/tonneau/charge-port, vent/close windows, auto-reconnect
+- Full HVAC: climate on/off, driver/passenger target temps, bioweapon, steering-wheel
+  heat, max defrost, climate keeper (off / on / dog / camp), cabin overheat protection
+- Seats: heat and cooler levels for all seats; auto-seat climate
+- Charging: start / stop, charge-limit and charging-amps presets
+- Media: play / pause, next / previous track, next / previous favorite, volume bump
+  and absolute set
+- Sentry mode toggle, flash lights, honk horn
+- **Proximity unlock**: per-car RSSI-based auto-unlock and auto-lock with hysteresis,
+  dwell timers, live RSSI calibration, and motion-aware foreground-service auto-pause
 - Keycard enrollment of new phones
 - Hardware-backed P-256 identity, AES-GCM session crypto
 
 Things that don't (yet):
 
-- Climate / preconditioning (Infotainment domain — not wired up)
 - Drive authorization (the "PIN to drive" path)
-- Background / locked-screen unlock
 - A Gradle wrapper (`gradlew`) — currently you need the gradle binary Studio downloads
 
 If something doesn't work for your car, open an issue with the **Diagnostics** panel

@@ -182,9 +182,280 @@ class TeslaSession(
         },
     )
 
+    suspend fun mediaNextTrack() = sendInfotainmentAction(
+        label = "MEDIA_NEXT_TRACK",
+        build = { setMediaNextTrack(CarServer.MediaNextTrack.getDefaultInstance()) },
+    )
+
+    suspend fun mediaPreviousTrack() = sendInfotainmentAction(
+        label = "MEDIA_PREV_TRACK",
+        build = { setMediaPreviousTrack(CarServer.MediaPreviousTrack.getDefaultInstance()) },
+    )
+
+    suspend fun mediaTogglePlayback() = sendInfotainmentAction(
+        label = "MEDIA_TOGGLE",
+        build = { setMediaPlayAction(CarServer.MediaPlayAction.getDefaultInstance()) },
+    )
+
+    suspend fun mediaNextFavorite() = sendInfotainmentAction(
+        label = "MEDIA_NEXT_FAV",
+        build = { setMediaNextFavorite(CarServer.MediaNextFavorite.getDefaultInstance()) },
+    )
+
+    suspend fun mediaPreviousFavorite() = sendInfotainmentAction(
+        label = "MEDIA_PREV_FAV",
+        build = { setMediaPreviousFavorite(CarServer.MediaPreviousFavorite.getDefaultInstance()) },
+    )
+
+    // -- Climate / HVAC -----------------------------------------------------------------
+
+    suspend fun climateOn() = sendInfotainmentAction(
+        label = "CLIMATE_ON",
+        build = {
+            setHvacAutoAction(CarServer.HvacAutoAction.newBuilder().setPowerOn(true))
+        },
+    )
+
+    suspend fun climateOff() = sendInfotainmentAction(
+        label = "CLIMATE_OFF",
+        build = {
+            setHvacAutoAction(CarServer.HvacAutoAction.newBuilder().setPowerOn(false))
+        },
+    )
+
     /**
-     * Ask the car for its current [Vehicle.VehicleData]. We request only the subsets the
-     * UI actually renders (charge state for range, closure state for window/door positions).
+     * Match Tesla's vehicle-command Go reference: set both driver/passenger temps in °C and
+     * mark `Level = TEMP_MAX` so the receiver interprets the absolute_celsius fields as the
+     * target. See teslamotors/vehicle-command pkg/vehicle/climate.go::ChangeClimateTemp.
+     */
+    suspend fun setClimateTemperature(driverC: Float, passengerC: Float) = sendInfotainmentAction(
+        label = "CLIMATE_TEMP",
+        build = {
+            setHvacTemperatureAdjustmentAction(
+                CarServer.HvacTemperatureAdjustmentAction.newBuilder()
+                    .setDriverTempCelsius(driverC)
+                    .setPassengerTempCelsius(passengerC)
+                    .setLevel(
+                        CarServer.HvacTemperatureAdjustmentAction.Temperature.newBuilder()
+                            .setTEMPMAX(VOID)
+                    )
+            )
+        },
+    )
+
+    suspend fun setSteeringWheelHeater(on: Boolean) = sendInfotainmentAction(
+        label = "STW_HEATER",
+        build = {
+            setHvacSteeringWheelHeaterAction(
+                CarServer.HvacSteeringWheelHeaterAction.newBuilder().setPowerOn(on)
+            )
+        },
+    )
+
+    suspend fun setBioweaponMode(on: Boolean, manualOverride: Boolean = true) = sendInfotainmentAction(
+        label = "BIOWEAPON",
+        build = {
+            setHvacBioweaponModeAction(
+                CarServer.HvacBioweaponModeAction.newBuilder()
+                    .setOn(on)
+                    .setManualOverride(manualOverride)
+            )
+        },
+    )
+
+    suspend fun setPreconditioningMax(on: Boolean, manualOverride: Boolean = true) = sendInfotainmentAction(
+        label = "PRECONDITION_MAX",
+        build = {
+            setHvacSetPreconditioningMaxAction(
+                CarServer.HvacSetPreconditioningMaxAction.newBuilder()
+                    .setOn(on)
+                    .setManualOverride(manualOverride)
+            )
+        },
+    )
+
+    suspend fun setClimateKeeperMode(
+        mode: CarServer.HvacClimateKeeperAction.ClimateKeeperAction_E,
+        manualOverride: Boolean = true,
+    ) = sendInfotainmentAction(
+        label = "CLIMATE_KEEPER",
+        build = {
+            setHvacClimateKeeperAction(
+                CarServer.HvacClimateKeeperAction.newBuilder()
+                    .setClimateKeeperAction(mode)
+                    .setManualOverride(manualOverride)
+            )
+        },
+    )
+
+    suspend fun setCabinOverheatProtection(on: Boolean, fanOnly: Boolean = false) = sendInfotainmentAction(
+        label = "COP",
+        build = {
+            setSetCabinOverheatProtectionAction(
+                CarServer.SetCabinOverheatProtectionAction.newBuilder()
+                    .setOn(on)
+                    .setFanOnly(fanOnly)
+            )
+        },
+    )
+
+    // -- Seats --------------------------------------------------------------------------
+
+    enum class SeatPosition { FRONT_LEFT, FRONT_RIGHT, REAR_LEFT, REAR_CENTER, REAR_RIGHT }
+    enum class HeaterLevel { OFF, LOW, MED, HIGH }
+    enum class CoolerLevel { OFF, LOW, MED, HIGH }
+
+    suspend fun setSeatHeater(seat: SeatPosition, level: HeaterLevel) = sendInfotainmentAction(
+        label = "SEAT_HEATER",
+        build = {
+            val a = CarServer.HvacSeatHeaterActions.HvacSeatHeaterAction.newBuilder()
+            when (level) {
+                HeaterLevel.OFF -> a.setSEATHEATEROFF(VOID)
+                HeaterLevel.LOW -> a.setSEATHEATERLOW(VOID)
+                HeaterLevel.MED -> a.setSEATHEATERMED(VOID)
+                HeaterLevel.HIGH -> a.setSEATHEATERHIGH(VOID)
+            }
+            when (seat) {
+                SeatPosition.FRONT_LEFT -> a.setCARSEATFRONTLEFT(VOID)
+                SeatPosition.FRONT_RIGHT -> a.setCARSEATFRONTRIGHT(VOID)
+                SeatPosition.REAR_LEFT -> a.setCARSEATREARLEFT(VOID)
+                SeatPosition.REAR_CENTER -> a.setCARSEATREARCENTER(VOID)
+                SeatPosition.REAR_RIGHT -> a.setCARSEATREARRIGHT(VOID)
+            }
+            setHvacSeatHeaterActions(
+                CarServer.HvacSeatHeaterActions.newBuilder()
+                    .addHvacSeatHeaterAction(a)
+            )
+        },
+    )
+
+    /**
+     * Front-seat cooling. vehicle-command's SetSeatCooler offsets the enum by +1 because
+     * proto's `HvacSeatCoolerLevel_Off = 1`. We mirror the explicit enum here for clarity.
+     */
+    suspend fun setSeatCooler(seat: SeatPosition, level: CoolerLevel) = sendInfotainmentAction(
+        label = "SEAT_COOLER",
+        build = {
+            val position = when (seat) {
+                SeatPosition.FRONT_LEFT ->
+                    CarServer.HvacSeatCoolerActions.HvacSeatCoolerPosition_E.HvacSeatCoolerPosition_FrontLeft
+                SeatPosition.FRONT_RIGHT ->
+                    CarServer.HvacSeatCoolerActions.HvacSeatCoolerPosition_E.HvacSeatCoolerPosition_FrontRight
+                else -> error("Seat cooling only available on front seats")
+            }
+            val lvl = when (level) {
+                CoolerLevel.OFF ->
+                    CarServer.HvacSeatCoolerActions.HvacSeatCoolerLevel_E.HvacSeatCoolerLevel_Off
+                CoolerLevel.LOW ->
+                    CarServer.HvacSeatCoolerActions.HvacSeatCoolerLevel_E.HvacSeatCoolerLevel_Low
+                CoolerLevel.MED ->
+                    CarServer.HvacSeatCoolerActions.HvacSeatCoolerLevel_E.HvacSeatCoolerLevel_Med
+                CoolerLevel.HIGH ->
+                    CarServer.HvacSeatCoolerActions.HvacSeatCoolerLevel_E.HvacSeatCoolerLevel_High
+            }
+            setHvacSeatCoolerActions(
+                CarServer.HvacSeatCoolerActions.newBuilder()
+                    .addHvacSeatCoolerAction(
+                        CarServer.HvacSeatCoolerActions.HvacSeatCoolerAction.newBuilder()
+                            .setSeatPosition(position)
+                            .setSeatCoolerLevel(lvl)
+                    )
+            )
+        },
+    )
+
+    suspend fun setAutoSeatClimate(seat: SeatPosition, on: Boolean) = sendInfotainmentAction(
+        label = "AUTO_SEAT",
+        build = {
+            val position = when (seat) {
+                SeatPosition.FRONT_LEFT ->
+                    CarServer.AutoSeatClimateAction.AutoSeatPosition_E.AutoSeatPosition_FrontLeft
+                SeatPosition.FRONT_RIGHT ->
+                    CarServer.AutoSeatClimateAction.AutoSeatPosition_E.AutoSeatPosition_FrontRight
+                else -> error("Auto seat climate only available on front seats")
+            }
+            setAutoSeatClimateAction(
+                CarServer.AutoSeatClimateAction.newBuilder()
+                    .addCarseat(
+                        CarServer.AutoSeatClimateAction.CarSeat.newBuilder()
+                            .setSeatPosition(position)
+                            .setOn(on)
+                    )
+            )
+        },
+    )
+
+    // -- Charging -----------------------------------------------------------------------
+
+    suspend fun chargeStart() = sendInfotainmentAction(
+        label = "CHARGE_START",
+        build = {
+            setChargingStartStopAction(
+                CarServer.ChargingStartStopAction.newBuilder().setStart(VOID)
+            )
+        },
+    )
+
+    suspend fun chargeStop() = sendInfotainmentAction(
+        label = "CHARGE_STOP",
+        build = {
+            setChargingStartStopAction(
+                CarServer.ChargingStartStopAction.newBuilder().setStop(VOID)
+            )
+        },
+    )
+
+    suspend fun setChargeLimit(percent: Int) = sendInfotainmentAction(
+        label = "CHARGE_LIMIT",
+        build = {
+            setChargingSetLimitAction(
+                CarServer.ChargingSetLimitAction.newBuilder().setPercent(percent)
+            )
+        },
+    )
+
+    suspend fun setChargingAmps(amps: Int) = sendInfotainmentAction(
+        label = "CHARGE_AMPS",
+        build = {
+            setSetChargingAmpsAction(
+                CarServer.SetChargingAmpsAction.newBuilder().setChargingAmps(amps)
+            )
+        },
+    )
+
+    // -- Misc vehicle controls ----------------------------------------------------------
+
+    suspend fun flashLights() = sendInfotainmentAction(
+        label = "FLASH",
+        build = {
+            setVehicleControlFlashLightsAction(
+                CarServer.VehicleControlFlashLightsAction.getDefaultInstance()
+            )
+        },
+    )
+
+    suspend fun honkHorn() = sendInfotainmentAction(
+        label = "HONK",
+        build = {
+            setVehicleControlHonkHornAction(
+                CarServer.VehicleControlHonkHornAction.getDefaultInstance()
+            )
+        },
+    )
+
+    suspend fun setSentryMode(on: Boolean) = sendInfotainmentAction(
+        label = "SENTRY",
+        build = {
+            setVehicleControlSetSentryModeAction(
+                CarServer.VehicleControlSetSentryModeAction.newBuilder().setOn(on)
+            )
+        },
+    )
+
+    /**
+     * Ask the car for its current [Vehicle.VehicleData]. We request the subsets the UI
+     * actually renders: charge (range + charge progress), closures (window/door positions),
+     * climate (cabin temps + seat states), tire pressure (Advanced status panel).
      */
     suspend fun requestVehicleData() = sendInfotainmentAction(
         label = "GET_VEHICLE_DATA",
@@ -193,6 +464,9 @@ class TeslaSession(
                 CarServer.GetVehicleData.newBuilder()
                     .setGetChargeState(CarServer.GetChargeState.getDefaultInstance())
                     .setGetClosuresState(CarServer.GetClosuresState.getDefaultInstance())
+                    .setGetClimateState(CarServer.GetClimateState.getDefaultInstance())
+                    .setGetTirePressureState(CarServer.GetTirePressureState.getDefaultInstance())
+                    .setGetMediaState(CarServer.GetMediaState.getDefaultInstance())
             )
         },
         encryptResponse = true,

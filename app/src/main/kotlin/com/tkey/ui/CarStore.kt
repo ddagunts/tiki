@@ -1,6 +1,7 @@
 package com.tkey.ui
 
 import android.content.Context
+import com.tkey.ui.proximity.ProximityConfig
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -39,6 +40,7 @@ class CarStore(context: Context) {
     fun remove(vin: String): List<SavedCar> {
         val current = list().filterNot { it.vin == vin }
         save(current)
+        removeProximity(vin)
         if (lastVin() == vin) setLastVin(null)
         return current
     }
@@ -51,6 +53,23 @@ class CarStore(context: Context) {
         editor.apply()
     }
 
+    fun getProximity(vin: String): ProximityConfig {
+        val raw = prefs.getString(proxKey(vin), null) ?: return ProximityConfig()
+        return runCatching { ProximityConfig.fromJson(JSONObject(raw)) }.getOrDefault(ProximityConfig())
+    }
+
+    fun setProximity(vin: String, cfg: ProximityConfig) {
+        prefs.edit().putString(proxKey(vin), cfg.toJson().toString()).apply()
+    }
+
+    /** Returns (vin -> config) for every car that has proximity enabled. */
+    fun enabledProximity(): Map<String, ProximityConfig> = buildMap {
+        for (car in list()) {
+            val cfg = getProximity(car.vin)
+            if (cfg.enabled) put(car.vin, cfg)
+        }
+    }
+
     private fun save(cars: List<SavedCar>) {
         val arr = JSONArray()
         for (c in cars) {
@@ -59,10 +78,16 @@ class CarStore(context: Context) {
         prefs.edit().putString(KEY_CARS, arr.toString()).apply()
     }
 
+    private fun removeProximity(vin: String) {
+        prefs.edit().remove(proxKey(vin)).apply()
+    }
+
     companion object {
         const val MAX_CARS = 10
         private const val PREFS_NAME = "tkey_cars"
         private const val KEY_CARS = "cars"
         private const val KEY_LAST_VIN = "last_vin"
+
+        private fun proxKey(vin: String) = "prox_$vin"
     }
 }
