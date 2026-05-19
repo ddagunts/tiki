@@ -2,6 +2,9 @@ package com.tkey.session
 
 import android.util.Log
 import com.google.protobuf.ByteString
+import com.tesla.generated.carserver.common.Common
+import com.tesla.generated.carserver.server.CarServer
+import com.tesla.generated.carserver.vehicle.Vehicle
 import com.tesla.generated.keys.Keys
 import com.tesla.generated.signatures.Signatures
 import com.tesla.generated.universalmessage.UniversalMessage
@@ -86,6 +89,18 @@ class TeslaSession(
     private val _vehicleStatus = MutableStateFlow<VehicleStatusSnapshot?>(null)
     val vehicleStatus: StateFlow<VehicleStatusSnapshot?> = _vehicleStatus.asStateFlow()
 
+    /** Latest VehicleData decoded from an Infotainment Response. */
+    private val _vehicleData = MutableStateFlow<VehicleDataSnapshot?>(null)
+    val vehicleData: StateFlow<VehicleDataSnapshot?> = _vehicleData.asStateFlow()
+
+    /**
+     * Outstanding Infotainment requests indexed by the UUID we generated. Each entry
+     * stores the AES-GCM authentication tag we used on the request — needed to compute
+     * the AAD for the response decryption.
+     */
+    private data class PendingRequest(val tag: ByteArray, val label: String, val sentAtMs: Long)
+    private val pendingByUuid = mutableMapOf<ByteString, PendingRequest>()
+
     /** Number of inbound RoutableMessages parsed since [start]. Exposed for the UI. */
     private val _rxCount = MutableStateFlow(0)
     val rxCount: StateFlow<Int> = _rxCount.asStateFlow()
@@ -125,6 +140,140 @@ class TeslaSession(
         val req = Vcsec.ClosureMoveRequest.newBuilder().apply(build).build()
         val unsigned = Vcsec.UnsignedMessage.newBuilder().setClosureMoveRequest(req).build()
         sendVcsecSigned(unsigned, label = label)
+    }
+
+    // -- Infotainment domain ------------------------------------------------------------
+
+    suspend fun ventWindows() = sendInfotainmentAction(
+        label = "WINDOWS_VENT",
+        build = {
+            setVehicleControlWindowAction(
+                CarServer.VehicleControlWindowAction.newBuilder().setVent(VOID)
+            )
+        },
+    )
+
+    suspend fun closeWindows() = sendInfotainmentAction(
+        label = "WINDOWS_CLOSE",
+        build = {
+            setVehicleControlWindowAction(
+                CarServer.VehicleControlWindowAction.newBuilder().setClose(VOID)
+            )
+        },
+    )
+
+    suspend fun setVolumeAbsolute(level: Float) = sendInfotainmentAction(
+        label = "VOLUME_SET",
+        build = {
+            setMediaUpdateVolume(
+                CarServer.MediaUpdateVolume.newBuilder()
+                    .setVolumeAbsoluteFloat(level)
+            )
+        },
+    )
+
+    suspend fun bumpVolume(delta: Int) = sendInfotainmentAction(
+        label = "VOLUME_BUMP",
+        build = {
+            setMediaUpdateVolume(
+                CarServer.MediaUpdateVolume.newBuilder()
+                    .setVolumeDelta(delta)
+            )
+        },
+    )
+
+    /**
+     * Ask the car for its current [Vehicle.VehicleData]. We request only the subsets the
+     * UI actually renders (charge state for range, closure state for window/door positions).
+     */
+    suspend fun requestVehicleData() = sendInfotainmentAction(
+        label = "GET_VEHICLE_DATA",
+        build = {
+            setGetVehicleData(
+                CarServer.GetVehicleData.newBuilder()
+                    .setGetChargeState(CarServer.GetChargeState.getDefaultInstance())
+                    .setGetClosuresState(CarServer.GetClosuresState.getDefaultInstance())
+            )
+        },
+        encryptResponse = true,
+    )
+
+    private suspend fun sendInfotainmentAction(
+        label: String,
+        encryptResponse: Boolean = false,
+        build: CarServer.VehicleAction.Builder.() -> Unit,
+    ) {
+        val vehicleAction = CarServer.VehicleAction.newBuilder().apply(build).build()
+        val action = CarServer.Action.newBuilder()
+            .setVehicleAction(vehicleAction)
+            .build()
+        sendInfotainmentSigned(action.toByteArray(), label, encryptResponse)
+    }
+
+    private suspend fun sendInfotainmentSigned(
+        plaintext: ByteArray,
+        label: String,
+        encryptResponse: Boolean,
+    ) {
+        val state = domainStates[UniversalMessage.Domain.DOMAIN_INFOTAINMENT]
+            ?: error("Infotainment session not yet established — call requestSessionInfo(DOMAIN_INFOTAINMENT) first")
+
+        state.counter += 1
+        val counter = state.counter
+        val expiresAt = vehicleClockNow(state) + COMMAND_EXPIRY_SEC
+        // Tesla's "Flags" enum gives bit *positions*: FLAG_ENCRYPT_RESPONSE=1 → bit 1 → mask 0b10.
+        val flags = if (encryptResponse) 1 shl UniversalMessage.Flags.FLAG_ENCRYPT_RESPONSE_VALUE else 0
+
+        val aadBuilder = Metadata.sha256()
+            .addByte(
+                Metadata.Tag.SIGNATURE_TYPE,
+                Signatures.SignatureType.SIGNATURE_TYPE_AES_GCM_PERSONALIZED.number,
+            )
+            .addByte(Metadata.Tag.DOMAIN, UniversalMessage.Domain.DOMAIN_INFOTAINMENT.number)
+            .add(Metadata.Tag.PERSONALIZATION, vin.toByteArray(Charsets.US_ASCII))
+            .add(Metadata.Tag.EPOCH, state.epoch)
+            .addUint32BE(Metadata.Tag.EXPIRES_AT, expiresAt)
+            .addUint32BE(Metadata.Tag.COUNTER, counter)
+        if (flags != 0) aadBuilder.addUint32BE(Metadata.Tag.FLAGS, flags)
+        val aad = aadBuilder.checksum()
+
+        val frame = state.session.encrypt(plaintext, aad)
+
+        val sigData = Signatures.SignatureData.newBuilder()
+            .setSignerIdentity(
+                Signatures.KeyIdentity.newBuilder()
+                    .setPublicKey(ByteString.copyFrom(identity.publicKeyBytes()))
+            )
+            .setAESGCMPersonalizedData(
+                Signatures.AES_GCM_Personalized_Signature_Data.newBuilder()
+                    .setEpoch(ByteString.copyFrom(state.epoch))
+                    .setNonce(ByteString.copyFrom(frame.nonce))
+                    .setCounter(counter)
+                    .setExpiresAt(expiresAt)
+                    .setTag(ByteString.copyFrom(frame.tag))
+            )
+            .build()
+
+        val uuidBytes = randomBytes(16)
+        val uuid = ByteString.copyFrom(uuidBytes)
+        val msgBuilder = UniversalMessage.RoutableMessage.newBuilder()
+            .setToDestination(
+                UniversalMessage.Destination.newBuilder().setDomain(UniversalMessage.Domain.DOMAIN_INFOTAINMENT)
+            )
+            .setFromDestination(
+                UniversalMessage.Destination.newBuilder()
+                    .setRoutingAddress(ByteString.copyFrom(randomBytes(16)))
+            )
+            .setProtobufMessageAsBytes(ByteString.copyFrom(frame.ciphertext))
+            .setSignatureData(sigData)
+            .setUuid(uuid)
+        if (flags != 0) msgBuilder.flags = flags
+
+        pendingByUuid[uuid] = PendingRequest(frame.tag, label, System.currentTimeMillis())
+
+        val bytes = msgBuilder.build().toByteArray()
+        Log.i(TAG, "TX infotainment $label counter=$counter flags=$flags bytes=${bytes.size}")
+        connection.send(bytes)
     }
 
     private suspend fun sendVcsecSigned(unsigned: Vcsec.UnsignedMessage, label: String) {
@@ -185,6 +334,7 @@ class TeslaSession(
 
     private companion object Const {
         const val COMMAND_EXPIRY_SEC = 5
+        val VOID: Common.Void = Common.Void.getDefaultInstance()
     }
 
     /**
@@ -294,7 +444,12 @@ class TeslaSession(
         Log.i(TAG, "RX from=$fromDom payload=${msg.payloadCase}")
 
         if (msg.payloadCase == UniversalMessage.RoutableMessage.PayloadCase.PROTOBUF_MESSAGE_AS_BYTES) {
-            handleVcsecMessage(msg.protobufMessageAsBytes.toByteArray())
+            val fromDomain = if (msg.fromDestination.hasDomain()) msg.fromDestination.domain else null
+            if (fromDomain == UniversalMessage.Domain.DOMAIN_INFOTAINMENT) {
+                handleInfotainmentResponse(msg)
+            } else {
+                handleVcsecMessage(msg.protobufMessageAsBytes.toByteArray())
+            }
             return
         }
         if (msg.payloadCase != UniversalMessage.RoutableMessage.PayloadCase.SESSION_INFO) {
@@ -349,6 +504,16 @@ class TeslaSession(
             statusEnum = info.status,
         )
         Log.i(TAG, "Session derived for $domain K=${derived.key.toHex()}")
+
+        // Once Infotainment is up, fetch the data the UI needs (range, window state).
+        if (domain == UniversalMessage.Domain.DOMAIN_INFOTAINMENT &&
+            info.status == Signatures.Session_Info_Status.SESSION_INFO_STATUS_OK
+        ) {
+            scope.launch {
+                runCatching { requestVehicleData() }
+                    .onFailure { Log.w(TAG, "auto GET_VEHICLE_DATA failed: ${it.message}") }
+            }
+        }
     }
 
     private fun handleVcsecMessage(payload: ByteArray) {
@@ -385,12 +550,89 @@ class TeslaSession(
         }
     }
 
+    /**
+     * Decrypt an Infotainment reply addressed to one of our outstanding requests.
+     *
+     * AAD for [SIGNATURE_TYPE_AES_GCM_RESPONSE]:
+     *   SHA-256( SIG_TYPE=9 ‖ REQUEST_HASH=[sig_type_byte_of_request ‖ request_gcm_tag(16B)]
+     *            [‖ FAULT=<byte> if non-zero] ‖ TAG_END )
+     *
+     * If decryption succeeds and the payload contains [Vehicle.VehicleData], publish it
+     * to [vehicleData]. Otherwise log and drop — non-data Responses (windows, volume) only
+     * need their `actionStatus` for diagnostics, which we already log.
+     */
+    private fun handleInfotainmentResponse(msg: UniversalMessage.RoutableMessage) {
+        val state = domainStates[UniversalMessage.Domain.DOMAIN_INFOTAINMENT]
+        if (state == null) {
+            Log.w(TAG, "Infotainment RX but no session established yet — dropping")
+            return
+        }
+        val sigCase = msg.signatureData.sigTypeCase
+        if (sigCase != Signatures.SignatureData.SigTypeCase.AES_GCM_RESPONSE_DATA) {
+            Log.w(TAG, "Infotainment RX without AES_GCM_Response sig data (got $sigCase)")
+            return
+        }
+        val respSig = msg.signatureData.getAESGCMResponseData()
+        val pending = pendingByUuid.remove(msg.requestUuid)
+        if (pending == null) {
+            Log.w(TAG, "Infotainment RX for unknown request_uuid=${msg.requestUuid.toByteArray().toHex()}")
+            return
+        }
+
+        val requestHash = byteArrayOf(
+            Signatures.SignatureType.SIGNATURE_TYPE_AES_GCM_PERSONALIZED.number.toByte(),
+        ) + pending.tag
+        val fault = msg.signedMessageStatus.signedMessageFault.number
+        val aadBuilder = Metadata.sha256()
+            .addByte(
+                Metadata.Tag.SIGNATURE_TYPE,
+                Signatures.SignatureType.SIGNATURE_TYPE_AES_GCM_RESPONSE.number,
+            )
+            .add(Metadata.Tag.REQUEST_HASH, requestHash)
+        if (fault != 0) aadBuilder.addByte(Metadata.Tag.FAULT, fault)
+        val aad = aadBuilder.checksum()
+
+        val ciphertext = msg.protobufMessageAsBytes.toByteArray()
+        val plaintext = try {
+            state.session.decrypt(
+                respSig.nonce.toByteArray(),
+                ciphertext,
+                respSig.tag.toByteArray(),
+                aad,
+            )
+        } catch (e: Throwable) {
+            Log.w(TAG, "Infotainment decrypt failed for ${pending.label}: ${e.message}")
+            return
+        }
+
+        val response = try {
+            CarServer.Response.parseFrom(plaintext)
+        } catch (e: Throwable) {
+            Log.w(TAG, "Infotainment Response parse failed for ${pending.label}: ${e.message}")
+            return
+        }
+
+        Log.i(
+            TAG,
+            "RX infotainment ${pending.label} status=${response.actionStatus.result} payload=${response.responseMsgCase}",
+        )
+
+        if (response.responseMsgCase == CarServer.Response.ResponseMsgCase.VEHICLEDATA) {
+            _vehicleData.value = VehicleDataSnapshot(response.vehicleData, System.currentTimeMillis())
+        }
+    }
+
     private fun randomBytes(n: Int): ByteArray = ByteArray(n).also { rng.nextBytes(it) }
 
     private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
 
     data class VehicleStatusSnapshot(
         val status: Vcsec.VehicleStatus,
+        val receivedAtMs: Long,
+    )
+
+    data class VehicleDataSnapshot(
+        val data: Vehicle.VehicleData,
         val receivedAtMs: Long,
     )
 }

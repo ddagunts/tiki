@@ -47,9 +47,13 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.BluetoothSearching
+import androidx.compose.material.icons.automirrored.filled.VolumeDown
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Air
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.BluetoothConnected
+import androidx.compose.material.icons.filled.BatteryChargingFull
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
@@ -57,7 +61,6 @@ import androidx.compose.material.icons.filled.DirectionsCar
 import androidx.compose.material.icons.filled.ElectricCar
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
-import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
@@ -179,6 +182,7 @@ private fun Screen(modifier: Modifier = Modifier) {
     val enrollment = session?.enrollment?.collectAsState()?.value
     val rxCount = session?.rxCount?.collectAsState()?.value ?: 0
     val vehicleStatus = session?.vehicleStatus?.collectAsState()?.value
+    val vehicleData = session?.vehicleData?.collectAsState()?.value
     val active = phase !is CarController.Phase.Idle
     val coScope = rememberCoroutineScope()
 
@@ -242,12 +246,15 @@ private fun Screen(modifier: Modifier = Modifier) {
                 phase = phase,
                 connState = connState,
                 vehicleStatus = vehicleStatus,
+                vehicleData = vehicleData,
                 enrollment = enrollment,
                 refreshEnabled = connState is CarConnection.State.Ready && session != null,
                 onRefresh = {
                     session?.let { sess ->
                         coScope.launch {
                             runCatching { sess.requestVehicleStatus() }
+                                .onFailure { statusError = it.message }
+                            runCatching { sess.requestVehicleData() }
                                 .onFailure { statusError = it.message }
                         }
                     }
@@ -284,15 +291,20 @@ private fun Screen(modifier: Modifier = Modifier) {
                     )
                 }
 
+                val infotainmentReady = sess.isReady(UniversalMessage.Domain.DOMAIN_INFOTAINMENT)
                 ActionGrid(
                     enabled = sessionReady,
+                    infotainmentEnabled = sessionReady && infotainmentReady,
                     onLock = { coScope.launch { runCatching { sess.lock() }.onFailure { statusError = it.message } } },
                     onUnlock = { coScope.launch { runCatching { sess.unlock() }.onFailure { statusError = it.message } } },
-                    onFrunk = { coScope.launch { runCatching { sess.openFrunk() }.onFailure { statusError = it.message } } },
                     onTrunkOpen = { coScope.launch { runCatching { sess.openTrunk() }.onFailure { statusError = it.message } } },
                     onTrunkClose = { coScope.launch { runCatching { sess.closeTrunk() }.onFailure { statusError = it.message } } },
                     onPortOpen = { coScope.launch { runCatching { sess.openChargePort() }.onFailure { statusError = it.message } } },
                     onPortClose = { coScope.launch { runCatching { sess.closeChargePort() }.onFailure { statusError = it.message } } },
+                    onVentWindows = { coScope.launch { runCatching { sess.ventWindows() }.onFailure { statusError = it.message } } },
+                    onCloseWindows = { coScope.launch { runCatching { sess.closeWindows() }.onFailure { statusError = it.message } } },
+                    onVolumeDown = { coScope.launch { runCatching { sess.bumpVolume(-1) }.onFailure { statusError = it.message } } },
+                    onVolumeUp = { coScope.launch { runCatching { sess.bumpVolume(1) }.onFailure { statusError = it.message } } },
                 )
 
                 VehicleStatusCard(vehicleStatus)
@@ -625,6 +637,7 @@ private fun HeroCard(
     phase: CarController.Phase,
     connState: CarConnection.State?,
     vehicleStatus: TeslaSession.VehicleStatusSnapshot?,
+    vehicleData: TeslaSession.VehicleDataSnapshot?,
     enrollment: TeslaSession.Enrollment?,
     onRefresh: () -> Unit,
     refreshEnabled: Boolean,
@@ -686,7 +699,16 @@ private fun HeroCard(
                         fontFamily = FontFamily.Monospace,
                     )
                 }
-                PhaseChip(phase = phase, connState = connState)
+                Column(horizontalAlignment = Alignment.End) {
+                    PhaseChip(phase = phase, connState = connState)
+                    val cs = vehicleData?.data?.chargeState
+                    if (cs != null && (cs.hasBatteryRange() || cs.hasEstBatteryRange())) {
+                        Spacer(Modifier.height(6.dp))
+                        val miles = if (cs.hasEstBatteryRange()) cs.estBatteryRange else cs.batteryRange
+                        val pct = if (cs.hasBatteryLevel()) cs.batteryLevel else null
+                        RangeChip(miles = miles, batteryPct = pct)
+                    }
+                }
             }
 
             Spacer(Modifier.height(14.dp))
@@ -788,6 +810,34 @@ private fun LockOrb(color: Color, locked: Boolean, animate: Boolean) {
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun RangeChip(miles: Float, batteryPct: Int?) {
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(GraphiteHi)
+            .border(1.dp, Hairline, RoundedCornerShape(999.dp))
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            Icons.Filled.BatteryChargingFull,
+            contentDescription = null,
+            tint = Accent,
+            modifier = Modifier.size(14.dp),
+        )
+        Spacer(Modifier.width(6.dp))
+        val rangeText = "${miles.toInt()} mi"
+        val pctText = batteryPct?.let { " · $it%" } ?: ""
+        Text(
+            rangeText + pctText,
+            style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 0.6.sp),
+            color = MaterialTheme.colorScheme.onBackground,
+            fontFamily = FontFamily.SansSerif,
+        )
     }
 }
 
@@ -976,13 +1026,17 @@ private fun HandshakeRow(
 @Composable
 private fun ActionGrid(
     enabled: Boolean,
+    infotainmentEnabled: Boolean,
     onLock: () -> Unit,
     onUnlock: () -> Unit,
-    onFrunk: () -> Unit,
     onTrunkOpen: () -> Unit,
     onTrunkClose: () -> Unit,
     onPortOpen: () -> Unit,
     onPortClose: () -> Unit,
+    onVentWindows: () -> Unit,
+    onCloseWindows: () -> Unit,
+    onVolumeDown: () -> Unit,
+    onVolumeUp: () -> Unit,
 ) {
     SectionLabel("Controls")
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1005,13 +1059,6 @@ private fun ActionGrid(
             )
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-            ActionTile(
-                modifier = Modifier.weight(1f),
-                icon = Icons.Filled.Inventory2,
-                label = "Frunk",
-                enabled = enabled,
-                onClick = onFrunk,
-            )
             ActionTile(
                 modifier = Modifier.weight(1f),
                 icon = Icons.Filled.KeyboardArrowUp,
@@ -1043,6 +1090,38 @@ private fun ActionGrid(
                 onClick = onPortClose,
             )
         }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            ActionTile(
+                modifier = Modifier.weight(1f),
+                icon = Icons.Filled.Air,
+                label = "Vent windows",
+                enabled = infotainmentEnabled,
+                onClick = onVentWindows,
+            )
+            ActionTile(
+                modifier = Modifier.weight(1f),
+                icon = Icons.Filled.Close,
+                label = "Close windows",
+                enabled = infotainmentEnabled,
+                onClick = onCloseWindows,
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            ActionTile(
+                modifier = Modifier.weight(1f),
+                icon = Icons.AutoMirrored.Filled.VolumeDown,
+                label = "Volume −",
+                enabled = infotainmentEnabled,
+                onClick = onVolumeDown,
+            )
+            ActionTile(
+                modifier = Modifier.weight(1f),
+                icon = Icons.AutoMirrored.Filled.VolumeUp,
+                label = "Volume +",
+                enabled = infotainmentEnabled,
+                onClick = onVolumeUp,
+            )
+        }
     }
 }
 
@@ -1058,7 +1137,7 @@ private fun ActionTile(
     val tint = if (enabled) accent else TextMuted
     Row(
         modifier = modifier
-            .height(48.dp)
+            .height(54.dp)
             .clip(RoundedCornerShape(12.dp))
             .background(Graphite)
             .border(1.dp, Hairline, RoundedCornerShape(12.dp))
@@ -1069,14 +1148,14 @@ private fun ActionTile(
     ) {
         Box(
             modifier = Modifier
-                .size(26.dp)
+                .size(30.dp)
                 .clip(CircleShape)
                 .background(tint.copy(alpha = 0.14f)),
             contentAlignment = Alignment.Center,
         ) {
-            Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(15.dp))
+            Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(17.dp))
         }
-        Spacer(Modifier.width(8.dp))
+        Spacer(Modifier.width(9.dp))
         Text(
             label,
             style = MaterialTheme.typography.labelMedium,

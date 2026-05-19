@@ -144,6 +144,8 @@ class CarController(
 
         runCatching { s.requestVehicleStatus() }
             .onFailure { Log.w(TAG, "auto GET_STATUS failed: ${it.message}") }
+        runCatching { s.requestSessionInfo(UniversalMessage.Domain.DOMAIN_INFOTAINMENT) }
+            .onFailure { Log.w(TAG, "auto Infotainment session_info failed: ${it.message}") }
     }
 
     private suspend fun awaitDisconnect() {
