@@ -4,13 +4,10 @@
 
 <h1 align="center">tiki</h1>
 
-A phone-only Tesla key for Android. No cloud. No internet. No Google Play Services.
-The only runtime permission the app asks for is **Nearby devices** — that's it.
+A Tesla key for Android. Minimal permissions, no Internet access.
+The only runtime permission the app asks for is **Nearby devices**.
 The pairing keypair is generated and stored inside your phone's secure element, and the
 private half never leaves it.
-
-This is a hobby project — a best-effort, low-battery alternative to the official Tesla
-app for the small set of things a phone-as-a-key actually needs to do.
 
 > [!IMPORTANT]
 > Not affiliated with, endorsed by, or sponsored by Tesla, Inc. "Tesla" and "Model 3 / Y /
@@ -33,6 +30,19 @@ app for the small set of things a phone-as-a-key actually needs to do.
   <img src="docs/screenshots/settings_disabled.png" alt="Settings screen with Proximity unlock disabled" width="240">
   <img src="docs/screenshots/settings_proximity.png" alt="Settings screen with Proximity unlock enabled, showing RSSI sliders, live readout, and dwell sliders" width="240">
 </p>
+
+---
+
+## Install
+
+<a href="https://apps.obtainium.imranr.dev/redirect?r=obtainium://add/https://github.com/ddagunts/tiki">
+  <img src="https://github.com/ImranR98/Obtainium/blob/main/assets/graphics/badge_obtainium.png?raw=true" alt="Add to Obtainium" height="56">
+</a>
+
+[Obtainium](https://github.com/ImranR98/Obtainium) tracks the GitHub Releases of this
+repo and updates the app automatically. The signed APK is also attached to each release
+if you'd rather sideload it directly. F-Droid submission is in progress — see
+[`docs/fdroid/FDROID.md`](docs/fdroid/FDROID.md).
 
 ---
 
@@ -259,14 +269,12 @@ re-enroll with the keycard.
 
 ## Building from source
 
-Pinned to Android Studio Panda Patch 4 / AGP 9.2.1 / Kotlin 2.2.20. The Gradle wrapper
-scripts are not yet checked in; until they are, build with the Gradle binary that Studio
-downloads on first sync, and the JBR that ships with Studio:
+Pinned to Android Studio Panda Patch 4 / AGP 9.2.1 / Kotlin 2.2.20 / Gradle 9.5.1
+(via the checked-in wrapper). Build with the JBR that ships with Studio:
 
 ```bash
 JAVA_HOME=$HOME/Downloads/android-studio-panda4-patch1-linux/android-studio/jbr \
-  $HOME/.gradle/wrapper/dists/gradle-9.5.1-bin/*/gradle-9.5.1/bin/gradle \
-  :app:assembleDebug --console=plain
+  ./gradlew :app:assembleDebug --console=plain
 ```
 
 Install on a device with Bluetooth LE (`api 31+`):

@@ -1,0 +1,43 @@
+tiki is a Tesla key for Android. It talks the public Tesla BLE key protocol over Bluetooth Low Energy — no Internet permission, no Google services, no Tesla cloud. The only runtime permission it asks for is <b>Nearby devices</b>. The pairing keypair is generated and stored inside your phone's secure element; the private half never leaves it.
+
+<b>Not affiliated with, endorsed by, or sponsored by Tesla, Inc.</b> "Tesla" is a trademark of Tesla, Inc. This is independent software that speaks the published BLE key protocol. It is not a replacement for the official Tesla app and is not intended to be relied on as your sole means of entering or operating your car.
+
+<b>What it does</b>
+
+Once paired with the car, tiki can:
+
+* Lock and unlock the doors
+* Auto-unlock on approach and auto-lock on departure with opt-in per-car Proximity unlock (beta)
+* Open and close the trunk and charge port; vent and close the windows
+* Climate: toggle climate, set driver / passenger target temperatures (with 68 / 72 °F presets), bioweapon-defense mode, steering-wheel heat, precondition max
+* Audio / media: play / pause, next / previous track, next / previous favorite, volume up / down
+* Seats: heat and cooler levels for every seat; auto-seat climate
+* Climate keeper: Off / On / Dog / Camp modes, plus cabin overheat protection
+* Charging: start / stop, charge-limit presets, charging-current limit
+* Sentry mode on/off, flash lights, honk horn
+* Refresh and display vehicle status (lock state, sleep state, user presence, closures including frunk and tonneau, range, battery percent)
+* Auto-reconnect with backoff when the BLE link drops
+
+<b>What it isn't</b>
+
+* Not a replacement for the official Tesla app. Anything that needs Tesla's cloud is out of scope by design.
+* Not a long-range key. BLE range is roughly walking-up-to-the-car distance.
+* Not a UWB phone-as-key. Proximity unlock uses BLE RSSI, calibrated per car via live readout in Settings.
+
+<b>How it works under the hood</b>
+
+* BLE discovery: matches the Tesla-broadcast T&lt;8-byte-VIN-hash&gt; short-name beacon for your VIN
+* GATT connect, MTU negotiation, notifications enabled on the vehicle's RX / TX characteristics
+* ECDH (P-256) with the vehicle's static public key inside Android Keystore
+* AES-128-GCM session keyed per the Tesla reference implementation
+* VCSEC command / response framing with replay-protection counters
+
+<b>Permissions</b>
+
+* <b>Nearby devices</b> (BLUETOOTH_SCAN, BLUETOOTH_CONNECT) — required to discover and talk to the car
+* <b>Foreground service (connectedDevice)</b> — keeps the BLE session alive for Proximity unlock
+* <b>Notifications</b> — for the foreground-service notification (Android 13+)
+
+No INTERNET permission. No location permission (scan uses <i>neverForLocation</i>). No analytics, no crash reporting, no telemetry.
+
+Source, issue tracker, and protocol notes: https://github.com/ddagunts/tiki

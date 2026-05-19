@@ -1,0 +1,45 @@
+# Sample recipe for the fdroiddata repository.
+#
+# When submitting tiki to F-Droid, this file is what you copy into
+#   https://gitlab.com/fdroid/fdroiddata/-/blob/master/metadata/com.tkey.yml
+# (NOT into this repo — F-Droid maintains its own metadata repo). Keep this file
+# here as the authoritative source for what we propose; if a maintainer pushes
+# back on any field, update this and re-PR fdroiddata.
+#
+# Reference: https://f-droid.org/docs/Build_Metadata_Reference/
+
+Categories:
+  - Connectivity
+License: Apache-2.0
+AuthorName: Dmitry Dagunts
+AuthorEmail: ddagunts@protonmail.com
+SourceCode: https://github.com/ddagunts/tiki
+IssueTracker: https://github.com/ddagunts/tiki/issues
+
+AutoName: tiki
+Summary: Offline Tesla phone-as-key over Bluetooth Low Energy
+
+RepoType: git
+Repo: https://github.com/ddagunts/tiki
+
+Builds:
+  - versionName: 0.1.0
+    versionCode: 1
+    commit: v0.1.0
+    subdir: app
+    gradle:
+      - yes
+    sudo:
+      # Studio Panda Patch 4 ships AGP 9.2.1 which wants JDK 21. F-Droid's
+      # buildserver image bundles 17 by default; pull 21 from temurin.
+      - apt-get update
+      - apt-get install -y wget
+      - wget -O /tmp/jdk.tar.gz https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.5%2B11/OpenJDK21U-jdk_x64_linux_hotspot_21.0.5_11.tar.gz
+      - mkdir -p /opt/jdk21 && tar -xzf /tmp/jdk.tar.gz -C /opt/jdk21 --strip-components=1
+    env:
+      JAVA_HOME: /opt/jdk21
+
+AutoUpdateMode: Version
+UpdateCheckMode: Tags ^v.*
+CurrentVersion: 0.1.0
+CurrentVersionCode: 1

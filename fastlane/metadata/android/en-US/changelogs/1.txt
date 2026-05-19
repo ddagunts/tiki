@@ -1,0 +1,9 @@
+Initial F-Droid release.
+
+Tesla phone-as-key over Bluetooth Low Energy:
+- Lock / unlock, trunk, charge port, windows
+- Climate, audio, seats, climate keeper
+- Charging limits, sentry, lights, horn
+- Vehicle status (range, battery, closures)
+- Opt-in BLE-RSSI Proximity unlock (beta)
+- Pairing keypair sealed in Android Keystore; no Internet permission
