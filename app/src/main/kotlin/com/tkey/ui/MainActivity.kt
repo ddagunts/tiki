@@ -226,33 +226,39 @@ private fun Screen(modifier: Modifier = Modifier) {
     val active = phase !is CarController.Phase.Idle
     val coScope = rememberCoroutineScope()
 
-    // Persist "paired" once the car has accepted us — either via a fresh keycard
-    // enrollment or by replying with an OK session_info (which means the key is
-    // already on the whitelist). Until this flips, the controller stays in
-    // one-shot mode so the user can press Enroll without auto-reconnect
-    // interrupting the BLE link.
-    LaunchedEffect(vin, enrollment, sessionStatus) {
-        if (vin.length != 17 || carStore.isPaired(vin)) return@LaunchedEffect
+    // Flip paired=true when either the user just enrolled successfully, or the car
+    // came back with an OK session_info (key was already on the whitelist). The vin
+    // is read from the running session so this works whether the controller was
+    // started from the car view or from settings.
+    LaunchedEffect(enrollment, sessionStatus, session) {
+        val sessVin = session?.vin ?: return@LaunchedEffect
+        if (sessVin.length != 17 || carStore.isPaired(sessVin)) return@LaunchedEffect
         val enrolled = enrollment is TeslaSession.Enrollment.Success
         val okSession = sessionStatus is TeslaSession.Status.Established &&
             sessionStatus.statusEnum ==
                 com.tesla.generated.signatures.Signatures.Session_Info_Status.SESSION_INFO_STATUS_OK
-        if (enrolled || okSession) carStore.setPaired(vin, true)
+        if (enrolled || okSession) carStore.setPaired(sessVin, true)
     }
 
+    // VIN to start once permissions come back from the system dialog.
+    var pendingStartVin by remember { mutableStateOf<String?>(null) }
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { grants ->
+        val target = pendingStartVin
+        pendingStartVin = null
         if (grants.values.all { it }) {
             statusError = null
-            if (vin.length == 17) controller.start(vin) { carStore.isPaired(vin) }
+            if (target != null && target.length == 17) {
+                controller.start(target) { carStore.isPaired(target) }
+            }
         } else {
             statusError = "Permission denied: ${grants.filterValues { !it }.keys.joinToString()}"
         }
     }
 
-    fun startWithPermissions() {
-        if (vin.length != 17) return
+    fun startWithPermissions(targetVin: String) {
+        if (targetVin.length != 17) return
         val needed = arrayOf(
             Manifest.permission.BLUETOOTH_SCAN,
             Manifest.permission.BLUETOOTH_CONNECT,
@@ -262,8 +268,9 @@ private fun Screen(modifier: Modifier = Modifier) {
         }
         if (missing.isEmpty()) {
             statusError = null
-            controller.start(vin) { carStore.isPaired(vin) }
+            controller.start(targetVin) { carStore.isPaired(targetVin) }
         } else {
+            pendingStartVin = targetVin
             permissionLauncher.launch(missing.toTypedArray())
         }
     }
@@ -277,7 +284,7 @@ private fun Screen(modifier: Modifier = Modifier) {
         val car = cars.firstOrNull { it.vin == lastVin } ?: return@LaunchedEffect
         vin = car.vin
         selectedName = car.name
-        startWithPermissions()
+        startWithPermissions(car.vin)
     }
 
     Column(
@@ -287,7 +294,22 @@ private fun Screen(modifier: Modifier = Modifier) {
             .padding(top = 12.dp, bottom = 32.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        if (active) {
+        if (settingsVin != null) {
+            val car = cars.firstOrNull { it.vin == settingsVin }
+            if (car == null) {
+                LaunchedEffect(settingsVin) { settingsVin = null }
+            } else {
+                ProximitySettingsScreen(
+                    car = car,
+                    controller = controller,
+                    onStart = { startWithPermissions(car.vin) },
+                    onBack = {
+                        controller.stop()
+                        settingsVin = null
+                    },
+                )
+            }
+        } else if (active) {
             BackPill(label = "Vehicles", onClick = {
                 controller.stop()
                 vin = ""
@@ -316,38 +338,12 @@ private fun Screen(modifier: Modifier = Modifier) {
                 },
             )
 
-            (phase as? CarController.Phase.Stopped)?.let { stopped ->
-                ReconnectCard(reason = stopped.reason, onReconnect = { startWithPermissions() })
-            }
-
             session?.let { sess ->
                 val sessionReady = sessionStatus is TeslaSession.Status.Established &&
                     sessionStatus.statusEnum == com.tesla.generated.signatures.Signatures.Session_Info_Status.SESSION_INFO_STATUS_OK
-                val connReady = connState is CarConnection.State.Ready
 
                 if (enrollment is TeslaSession.Enrollment.AwaitingKeycard) {
                     KeycardPrompt()
-                }
-
-                if (!sessionReady) {
-                    HandshakeRow(
-                        connReady = connReady,
-                        sessionStatus = sessionStatus,
-                        enrollment = enrollment,
-                        onSession = {
-                            coScope.launch {
-                                runCatching {
-                                    sess.requestSessionInfo(UniversalMessage.Domain.DOMAIN_VEHICLE_SECURITY)
-                                }.onFailure { statusError = it.message }
-                            }
-                        },
-                        onEnroll = {
-                            coScope.launch {
-                                runCatching { sess.requestEnrollment() }
-                                    .onFailure { statusError = it.message }
-                            }
-                        },
-                    )
                 }
 
                 val infotainmentReady = sess.isReady(UniversalMessage.Domain.DOMAIN_INFOTAINMENT)
@@ -401,16 +397,6 @@ private fun Screen(modifier: Modifier = Modifier) {
             }
 
             statusError?.let { ErrorBanner(it) }
-        } else if (settingsVin != null) {
-            val car = cars.firstOrNull { it.vin == settingsVin }
-            if (car == null) {
-                LaunchedEffect(settingsVin) { settingsVin = null }
-            } else {
-                ProximitySettingsScreen(
-                    car = car,
-                    onBack = { settingsVin = null },
-                )
-            }
         } else {
             statusError?.let { ErrorBanner(it) }
 
@@ -431,7 +417,7 @@ private fun Screen(modifier: Modifier = Modifier) {
                                 selectedName = car.name
                                 statusError = null
                                 carStore.setLastVin(car.vin)
-                                startWithPermissions()
+                                startWithPermissions(car.vin)
                             },
                             onSettings = { settingsVin = car.vin },
                             onDelete = {
@@ -767,7 +753,6 @@ private fun HeroCard(
     val ringColor by animateColorAsState(
         targetValue = when {
             phase is CarController.Phase.Reconnecting -> Danger
-            phase is CarController.Phase.Stopped -> Warning
             phase is CarController.Phase.Idle -> TextMuted
             !ready -> Warning
             !hasStatus -> Accent
@@ -780,7 +765,6 @@ private fun HeroCard(
 
     val stateLabel = when {
         phase is CarController.Phase.Reconnecting -> "RECONNECTING"
-        phase is CarController.Phase.Stopped -> "DISCONNECTED"
         phase is CarController.Phase.Scanning -> "SCANNING"
         phase is CarController.Phase.Connecting -> "CONNECTING"
         phase is CarController.Phase.Handshaking -> "HANDSHAKING"
@@ -860,8 +844,6 @@ private fun HeroCard(
                         is CarController.Phase.Handshaking -> "Negotiating encrypted session…"
                         is CarController.Phase.Reconnecting ->
                             "Retry in ${(phase.remainingMs + 999) / 1000}s · ${phase.reason}"
-                        is CarController.Phase.Stopped ->
-                            "Auto-reconnect off until enrolled · ${phase.reason}"
                         is CarController.Phase.Ready ->
                             if (hasStatus) {
                                 val received = vehicleStatus!!.receivedAtMs
@@ -991,7 +973,6 @@ private fun PhaseChip(phase: CarController.Phase, connState: CarConnection.State
         phase is CarController.Phase.Handshaking
     val color = when {
         phase is CarController.Phase.Reconnecting -> Danger
-        phase is CarController.Phase.Stopped -> Warning
         ready -> Success
         animating -> Accent
         else -> TextMuted
@@ -1000,7 +981,6 @@ private fun PhaseChip(phase: CarController.Phase, connState: CarConnection.State
         phase is CarController.Phase.Scanning -> Icons.AutoMirrored.Filled.BluetoothSearching
         ready -> Icons.Filled.BluetoothConnected
         phase is CarController.Phase.Reconnecting -> Icons.Filled.Bluetooth
-        phase is CarController.Phase.Stopped -> Icons.Filled.Bluetooth
         else -> Icons.Filled.Sync
     }
     Row(
@@ -1060,44 +1040,6 @@ private fun PulseDot(color: Color, animate: Boolean) {
 // region — Active: keycard prompt + handshake
 
 @Composable
-private fun ReconnectCard(reason: String, onReconnect: () -> Unit) {
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
-        color = Color(0x33FBBF24),
-        border = androidx.compose.foundation.BorderStroke(1.dp, Warning.copy(alpha = 0.5f)),
-    ) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text(
-                "Disconnected",
-                style = MaterialTheme.typography.titleMedium,
-                color = Warning,
-                fontWeight = FontWeight.SemiBold,
-            )
-            Text(
-                "Auto-reconnect is off until first-time enrollment finishes. " +
-                    "Tap Reconnect, wait for Ready, then press Enroll and tap your keycard.",
-                style = MaterialTheme.typography.bodySmall,
-                color = TextSecondary,
-            )
-            Text(
-                reason,
-                style = MaterialTheme.typography.labelSmall,
-                color = TextMuted,
-                fontFamily = FontFamily.Monospace,
-            )
-            SecondaryButton(
-                modifier = Modifier.fillMaxWidth(),
-                text = "Reconnect",
-                icon = Icons.Filled.Sync,
-                enabled = true,
-                onClick = onReconnect,
-            )
-        }
-    }
-}
-
-@Composable
 private fun KeycardPrompt() {
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -1121,61 +1063,18 @@ private fun KeycardPrompt() {
             Spacer(Modifier.width(14.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    "Tap keycard now",
+                    "Finish on the car",
                     style = MaterialTheme.typography.titleMedium,
                     color = Warning,
                     fontWeight = FontWeight.SemiBold,
                 )
                 Text(
-                    "Hold your Tesla keycard on the center console to authorize this phone.",
+                    "1. Tap your Tesla keycard on the keycard slot behind the cupholders.\n" +
+                        "2. Accept the new key prompt on the car's display.",
                     style = MaterialTheme.typography.bodySmall,
                     color = TextSecondary,
                 )
             }
-        }
-    }
-}
-
-@Composable
-private fun HandshakeRow(
-    connReady: Boolean,
-    sessionStatus: TeslaSession.Status?,
-    enrollment: TeslaSession.Enrollment?,
-    onSession: () -> Unit,
-    onEnroll: () -> Unit,
-) {
-    SectionLabel("Setup")
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
-        color = Graphite,
-        border = androidx.compose.foundation.BorderStroke(1.dp, Hairline),
-    ) {
-        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                SecondaryButton(
-                    modifier = Modifier.weight(1f),
-                    text = "Session",
-                    icon = Icons.Filled.Sync,
-                    enabled = connReady,
-                    onClick = onSession,
-                )
-                SecondaryButton(
-                    modifier = Modifier.weight(1f),
-                    text = "Enroll",
-                    icon = Icons.Filled.Key,
-                    enabled = connReady,
-                    onClick = onEnroll,
-                )
-            }
-            val sub = when {
-                enrollment is TeslaSession.Enrollment.AwaitingKeycard -> "Awaiting keycard tap…"
-                enrollment is TeslaSession.Enrollment.Failed -> "Enrollment failed: ${enrollment.reason}"
-                sessionStatus is TeslaSession.Status.Failed -> "Session failed: ${sessionStatus.reason}"
-                sessionStatus is TeslaSession.Status.Requested -> "Requesting session info…"
-                else -> "Hit Session to start the handshake, then Enroll for first-time pairing."
-            }
-            Text(sub, style = MaterialTheme.typography.bodySmall, color = TextSecondary)
         }
     }
 }
@@ -1372,20 +1271,25 @@ private fun VehicleStatusCard(
         color = Graphite,
         border = androidx.compose.foundation.BorderStroke(1.dp, Hairline),
     ) {
-        if (snapshot == null) {
+        val cs = vehicleData?.data?.chargeState
+        val rangeText = cs?.let { rangeAndBatteryText(it) }
+        if (snapshot == null && rangeText == null) {
             Box(modifier = Modifier.fillMaxWidth().padding(20.dp), contentAlignment = Alignment.Center) {
                 Text(
-                    "Waiting for VCSEC status…",
+                    "Waiting for vehicle status…",
                     style = MaterialTheme.typography.bodySmall,
                     color = TextMuted,
                 )
+            }
+        } else if (snapshot == null) {
+            // No VCSEC status yet, but infotainment data is in — surface what we have.
+            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                StatusRow("Range", rangeText!!, tone = Tone.Good)
             }
         } else {
             val s = snapshot.status
             val closures = s.closureStatuses
             val tonneauPct = s.detailedClosureStatus.tonneauPercentOpen
-            val cs = vehicleData?.data?.chargeState
-            val rangeText = cs?.let { rangeAndBatteryText(it) }
             Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 if (rangeText != null) {
                     StatusRow("Range", rangeText, tone = Tone.Good)
@@ -1705,7 +1609,6 @@ private fun phaseLabel(phase: CarController.Phase): String = when (phase) {
     is CarController.Phase.Ready -> "Ready"
     is CarController.Phase.Reconnecting ->
         "Retry in ${(phase.remainingMs + 999) / 1000}s · attempt ${phase.attempt}: ${phase.reason}"
-    is CarController.Phase.Stopped -> "Stopped · ${phase.reason}"
 }
 
 private fun sessionStatusLabel(s: TeslaSession.Status): String = when (s) {
@@ -2478,6 +2381,8 @@ private fun formatMinutes(min: Int): String {
 @Composable
 private fun ProximitySettingsScreen(
     car: SavedCar,
+    controller: CarController,
+    onStart: () -> Unit,
     onBack: () -> Unit,
 ) {
     val ctx = LocalContext.current
@@ -2486,6 +2391,20 @@ private fun ProximitySettingsScreen(
     val live by ProximityRegistry.live.collectAsState()
     val serviceState by ProximityRegistry.serviceState.collectAsState()
     val liveState = live[car.vin]
+    val coScope = rememberCoroutineScope()
+    var pairError by remember { mutableStateOf<String?>(null) }
+
+    val session = controller.session.collectAsState().value
+    val sessionStatus = session?.status?.collectAsState()?.value
+    val enrollment = session?.enrollment?.collectAsState()?.value
+    val phase = controller.phase.collectAsState().value
+    val connection = controller.connection.collectAsState().value
+    val connState = connection?.state?.collectAsState()?.value
+    val connReady = connState is CarConnection.State.Ready
+
+    // Auto-start the controller for this car while the settings screen is open
+    // so Session/Enroll have something to talk to. onBack stops it.
+    LaunchedEffect(car.vin) { onStart() }
 
     val notifPermLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -2519,6 +2438,66 @@ private fun ProximitySettingsScreen(
                     color = TextMuted,
                     fontFamily = FontFamily.Monospace,
                 )
+            }
+        }
+
+        SectionLabel("Pair this phone")
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(20.dp),
+            color = Graphite,
+            border = androidx.compose.foundation.BorderStroke(1.dp, Hairline),
+        ) {
+            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (enrollment is TeslaSession.Enrollment.AwaitingKeycard) {
+                    KeycardPrompt()
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    SecondaryButton(
+                        modifier = Modifier.weight(1f),
+                        text = "Session",
+                        icon = Icons.Filled.Sync,
+                        enabled = connReady && session != null,
+                        onClick = {
+                            val sess = session ?: return@SecondaryButton
+                            coScope.launch {
+                                runCatching {
+                                    sess.requestSessionInfo(UniversalMessage.Domain.DOMAIN_VEHICLE_SECURITY)
+                                }.onFailure { pairError = it.message }
+                            }
+                        },
+                    )
+                    SecondaryButton(
+                        modifier = Modifier.weight(1f),
+                        text = "Enroll",
+                        icon = Icons.Filled.Key,
+                        enabled = connReady && session != null,
+                        onClick = {
+                            val sess = session ?: return@SecondaryButton
+                            coScope.launch {
+                                runCatching { sess.requestEnrollment() }
+                                    .onFailure { pairError = it.message }
+                            }
+                        },
+                    )
+                }
+                val sub = when {
+                    enrollment is TeslaSession.Enrollment.Success -> "Paired"
+                    enrollment is TeslaSession.Enrollment.AwaitingKeycard -> "Awaiting keycard tap…"
+                    enrollment is TeslaSession.Enrollment.Failed -> "Enrollment failed: ${enrollment.reason}"
+                    sessionStatus is TeslaSession.Status.Failed -> "Session failed: ${sessionStatus.reason}"
+                    sessionStatus is TeslaSession.Status.Requested -> "Requesting session info…"
+                    sessionStatus is TeslaSession.Status.Established &&
+                        sessionStatus.statusEnum ==
+                        com.tesla.generated.signatures.Signatures.Session_Info_Status.SESSION_INFO_STATUS_OK ->
+                        "Session OK"
+                    connReady -> "Connected. Tap Session, then Enroll."
+                    else -> phaseLabel(phase)
+                }
+                Text(sub, style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                pairError?.let {
+                    Text(it, style = MaterialTheme.typography.labelSmall, color = Danger)
+                }
             }
         }
 

@@ -38,7 +38,7 @@ private const val TAG = "TKey.Sess"
 class TeslaSession(
     private val identity: Identity,
     private val connection: CarConnection,
-    private val vin: String,
+    val vin: String,
 ) {
 
     /** State cached after a successful session_info handshake with a specific domain. */
@@ -741,7 +741,29 @@ class TeslaSession(
             "SessionInfo status=${info.status} counter=${info.counter} clock=${info.clockTime} epoch=${info.epoch.toByteArray().toHex()}",
         )
 
+        val domain = if (msg.fromDestination.hasDomain()) {
+            msg.fromDestination.domain
+        } else {
+            UniversalMessage.Domain.DOMAIN_BROADCAST
+        }
+
+        // Unpaired keys get a SessionInfo with status=KEY_NOT_ON_WHITELIST and an
+        // empty publicKey field — that's a normal "not on whitelist yet" reply, not
+        // a malformed message. Surface it as Established with the non-OK enum so
+        // the UI can offer Enroll; just don't try to derive an ECDH session.
         val pubBytes = info.publicKey.toByteArray()
+        if (info.status != Signatures.Session_Info_Status.SESSION_INFO_STATUS_OK) {
+            Log.i(TAG, "SessionInfo non-OK (status=${info.status}, pubKey=${pubBytes.size}B) — skipping ECDH")
+            _status.value = Status.Established(
+                domain = domain,
+                counter = info.counter,
+                epochHex = info.epoch.toByteArray().toHex(),
+                vehicleClockSec = info.clockTime.toLong() and 0xFFFFFFFFL,
+                statusEnum = info.status,
+            )
+            return
+        }
+
         if (pubBytes.size != 65 || pubBytes[0] != 0x04.toByte()) {
             Log.w(TAG, "SessionInfo publicKey bad: size=${pubBytes.size}")
             _status.value = Status.Failed("vehicle public key wrong size: ${pubBytes.size}")
@@ -757,11 +779,6 @@ class TeslaSession(
             return
         }
 
-        val domain = if (msg.fromDestination.hasDomain()) {
-            msg.fromDestination.domain
-        } else {
-            UniversalMessage.Domain.DOMAIN_BROADCAST
-        }
         sessions[domain] = derived
         domainStates[domain] = DomainState(
             session = derived,
@@ -821,6 +838,20 @@ class TeslaSession(
             Vcsec.OperationStatus_E.OPERATIONSTATUS_ERROR ->
                 Enrollment.Failed(wls.whitelistOperationInformation.name)
             else -> Enrollment.Failed("unknown op status: ${cmd.operationStatus}")
+        }
+        // Just landed on the whitelist — re-handshake both domains so the next
+        // session_info brings back a valid publicKey (lets us derive ECDH keys),
+        // and pull initial vehicle status + data without waiting for the user to
+        // bounce out and re-enter the car view.
+        if (cmd.operationStatus == Vcsec.OperationStatus_E.OPERATIONSTATUS_OK) {
+            scope.launch {
+                runCatching { requestSessionInfo(UniversalMessage.Domain.DOMAIN_VEHICLE_SECURITY) }
+                    .onFailure { Log.w(TAG, "post-enroll VCSEC session_info failed: ${it.message}") }
+                runCatching { requestSessionInfo(UniversalMessage.Domain.DOMAIN_INFOTAINMENT) }
+                    .onFailure { Log.w(TAG, "post-enroll Infotainment session_info failed: ${it.message}") }
+                runCatching { requestVehicleStatus() }
+                    .onFailure { Log.w(TAG, "post-enroll GET_STATUS failed: ${it.message}") }
+            }
         }
     }
 

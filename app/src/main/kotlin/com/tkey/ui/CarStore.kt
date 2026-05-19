@@ -46,9 +46,7 @@ class CarStore(context: Context) {
         return current
     }
 
-    fun lastVin(): String? = prefs.getString(KEY_LAST_VIN, null)
-
-    /** True once the car has been fully enrolled (keycard-tapped) at least once. */
+    /** True once we've completed first-time enrollment (keycard tap) for this VIN. */
     fun isPaired(vin: String): Boolean =
         prefs.getStringSet(KEY_PAIRED_VINS, emptySet())?.contains(vin) == true
 
@@ -57,6 +55,8 @@ class CarStore(context: Context) {
         val changed = if (paired) current.add(vin) else current.remove(vin)
         if (changed) prefs.edit().putStringSet(KEY_PAIRED_VINS, current).apply()
     }
+
+    fun lastVin(): String? = prefs.getString(KEY_LAST_VIN, null)
 
     fun setLastVin(vin: String?) {
         val editor = prefs.edit()

@@ -1,0 +1,9 @@
+First-time pairing reworked + battery/range now visible.
+
+- Session and Enroll buttons moved into the per-car settings screen so the first-time pairing flow doesn't fight the auto-reconnect loop.
+- Stop treating an unpaired car's empty session_info reply as a fatal handshake error — that was the source of the retry storm.
+- Don't auto-handshake against cars that haven't been enrolled yet. Once enrollment completes (or the car returns an OK session), auto-handshake comes back on.
+- Activity now survives orientation / dark-mode / font-scale changes without dropping you back to the vehicle list.
+- After Enroll, both VCSEC and infotainment sessions are re-fetched on the same BLE link, so range and battery show up immediately.
+- Vehicle status card surfaces range/battery as soon as infotainment data arrives, even before the VCSEC snapshot lands.
+- Keycard prompt now spells out: tap your keycard in the slot behind the cupholders, then accept the new-key prompt on the car's display.

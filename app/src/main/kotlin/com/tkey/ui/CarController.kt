@@ -44,12 +44,6 @@ class CarController(
             val attempt: Int,
             val remainingMs: Long,
         ) : Phase()
-        /**
-         * Loop terminated without falling back to Idle so the UI stays on the car view.
-         * Used for unpaired cars where auto-reconnect would yank the BLE link out from
-         * under a user trying to press Enroll — they manually restart instead.
-         */
-        data class Stopped(val reason: String) : Phase()
     }
 
     private val _phase = MutableStateFlow<Phase>(Phase.Idle)
@@ -65,10 +59,11 @@ class CarController(
     private var loopJob: Job? = null
 
     /**
-     * @param pairedProvider returns true once the car has completed first-time
-     * enrollment. While it returns false the controller does a single attempt and
-     * gives up on disconnect/failure, so the user can press "Enroll" without the
-     * loop yanking the session out from under them.
+     * @param pairedProvider returns true if this car has completed first-time
+     * enrollment. When false the controller still scans + connects, but stops
+     * short of the session_info handshake — the UI drives Session / Enroll
+     * manually from the settings screen. Read at every iteration so the loop
+     * picks up "paired" state changes between reconnects.
      */
     fun start(vin: String, pairedProvider: () -> Boolean = { true }) {
         loopJob?.cancel()
@@ -92,28 +87,18 @@ class CarController(
         try {
             while (currentCoroutineContext().isActive) {
                 try {
-                    runOnce(vin, failAttempt)
+                    runOnce(vin, failAttempt, pairedProvider())
                     failAttempt = 0
                     awaitDisconnect()
-                    cleanupSession()
-                    if (!pairedProvider()) {
-                        Log.i(TAG, "Link dropped; car not paired yet — stopping (user must reconnect)")
-                        _phase.value = Phase.Stopped("Link dropped before enrollment")
-                        break
-                    }
                     Log.i(TAG, "Link dropped — retrying scan")
+                    cleanupSession()
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Throwable) {
                     cleanupSession()
-                    val reason = e.message ?: e::class.simpleName.orEmpty()
-                    if (!pairedProvider()) {
-                        Log.i(TAG, "Iteration failed before pairing ($reason) — stopping (user must reconnect)")
-                        _phase.value = Phase.Stopped(reason)
-                        break
-                    }
                     failAttempt++
                     val delayMs = backoffMs(failAttempt)
+                    val reason = e.message ?: e::class.simpleName.orEmpty()
                     Log.w(TAG, "Iteration failed ($reason); retrying in ${delayMs}ms (attempt $failAttempt)")
                     countdown(reason, failAttempt, delayMs)
                 }
@@ -123,7 +108,7 @@ class CarController(
         }
     }
 
-    private suspend fun runOnce(vin: String, failAttempt: Int) {
+    private suspend fun runOnce(vin: String, failAttempt: Int, paired: Boolean) {
         _phase.value = Phase.Scanning(attempt = failAttempt + 1)
         val beacon = CarScanner(ctx).discover(vin)
             .mapNotNull { (it as? CarScanner.Event.Match)?.beacon }
@@ -142,10 +127,19 @@ class CarController(
             error("Transport ended in $transport")
         }
 
-        _phase.value = Phase.Handshaking
         val s = TeslaSession(identity, conn, vin)
         s.start()
         _session.value = s
+
+        if (!paired) {
+            // Unpaired: don't auto-handshake — let the user drive Session/Enroll from
+            // settings. Repeatedly firing session_info against an unwhitelisted key
+            // doesn't go anywhere useful and looks like a retry storm to the user.
+            _phase.value = Phase.Ready
+            return
+        }
+
+        _phase.value = Phase.Handshaking
         s.requestSessionInfo(UniversalMessage.Domain.DOMAIN_VEHICLE_SECURITY)
 
         // Race handshake against transport — don't hang if the link drops mid-handshake.
