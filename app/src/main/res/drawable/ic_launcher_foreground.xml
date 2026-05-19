@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Soft accent halo behind the key, mirroring the app's lock-orb. -->
+    <path android:pathData="M54,54m-30,0a30,30 0 1,0 60,0a30,30 0 1,0 -60,0z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="radial"
+                android:centerX="54"
+                android:centerY="54"
+                android:gradientRadius="30"
+                android:startColor="#337DD3C0"
+                android:endColor="#007DD3C0" />
+        </aapt:attr>
+    </path>
+
+    <!-- Key: ring bow (left) + shaft + two teeth, drawn as one shape with evenOdd hole. -->
+    <path
+        android:fillColor="#7DD3C0"
+        android:fillType="evenOdd"
+        android:pathData="
+            M20,54
+            a18,18 0 1,0 36,0
+            a18,18 0 1,0 -36,0 Z
+            M30,54
+            a8,8 0 1,1 16,0
+            a8,8 0 1,1 -16,0 Z
+            M56,49
+            L84,49
+            L84,67
+            L78,67
+            L78,59
+            L74,59
+            L74,65
+            L68,65
+            L68,59
+            L56,59 Z" />
+</vector>
