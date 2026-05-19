@@ -226,12 +226,26 @@ private fun Screen(modifier: Modifier = Modifier) {
     val active = phase !is CarController.Phase.Idle
     val coScope = rememberCoroutineScope()
 
+    // Persist "paired" once the car has accepted us — either via a fresh keycard
+    // enrollment or by replying with an OK session_info (which means the key is
+    // already on the whitelist). Until this flips, the controller stays in
+    // one-shot mode so the user can press Enroll without auto-reconnect
+    // interrupting the BLE link.
+    LaunchedEffect(vin, enrollment, sessionStatus) {
+        if (vin.length != 17 || carStore.isPaired(vin)) return@LaunchedEffect
+        val enrolled = enrollment is TeslaSession.Enrollment.Success
+        val okSession = sessionStatus is TeslaSession.Status.Established &&
+            sessionStatus.statusEnum ==
+                com.tesla.generated.signatures.Signatures.Session_Info_Status.SESSION_INFO_STATUS_OK
+        if (enrolled || okSession) carStore.setPaired(vin, true)
+    }
+
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { grants ->
         if (grants.values.all { it }) {
             statusError = null
-            if (vin.length == 17) controller.start(vin)
+            if (vin.length == 17) controller.start(vin) { carStore.isPaired(vin) }
         } else {
             statusError = "Permission denied: ${grants.filterValues { !it }.keys.joinToString()}"
         }
@@ -248,7 +262,7 @@ private fun Screen(modifier: Modifier = Modifier) {
         }
         if (missing.isEmpty()) {
             statusError = null
-            controller.start(vin)
+            controller.start(vin) { carStore.isPaired(vin) }
         } else {
             permissionLauncher.launch(missing.toTypedArray())
         }
@@ -301,6 +315,10 @@ private fun Screen(modifier: Modifier = Modifier) {
                     }
                 },
             )
+
+            (phase as? CarController.Phase.Stopped)?.let { stopped ->
+                ReconnectCard(reason = stopped.reason, onReconnect = { startWithPermissions() })
+            }
 
             session?.let { sess ->
                 val sessionReady = sessionStatus is TeslaSession.Status.Established &&
@@ -749,6 +767,7 @@ private fun HeroCard(
     val ringColor by animateColorAsState(
         targetValue = when {
             phase is CarController.Phase.Reconnecting -> Danger
+            phase is CarController.Phase.Stopped -> Warning
             phase is CarController.Phase.Idle -> TextMuted
             !ready -> Warning
             !hasStatus -> Accent
@@ -761,6 +780,7 @@ private fun HeroCard(
 
     val stateLabel = when {
         phase is CarController.Phase.Reconnecting -> "RECONNECTING"
+        phase is CarController.Phase.Stopped -> "DISCONNECTED"
         phase is CarController.Phase.Scanning -> "SCANNING"
         phase is CarController.Phase.Connecting -> "CONNECTING"
         phase is CarController.Phase.Handshaking -> "HANDSHAKING"
@@ -840,6 +860,8 @@ private fun HeroCard(
                         is CarController.Phase.Handshaking -> "Negotiating encrypted session…"
                         is CarController.Phase.Reconnecting ->
                             "Retry in ${(phase.remainingMs + 999) / 1000}s · ${phase.reason}"
+                        is CarController.Phase.Stopped ->
+                            "Auto-reconnect off until enrolled · ${phase.reason}"
                         is CarController.Phase.Ready ->
                             if (hasStatus) {
                                 val received = vehicleStatus!!.receivedAtMs
@@ -969,6 +991,7 @@ private fun PhaseChip(phase: CarController.Phase, connState: CarConnection.State
         phase is CarController.Phase.Handshaking
     val color = when {
         phase is CarController.Phase.Reconnecting -> Danger
+        phase is CarController.Phase.Stopped -> Warning
         ready -> Success
         animating -> Accent
         else -> TextMuted
@@ -977,6 +1000,7 @@ private fun PhaseChip(phase: CarController.Phase, connState: CarConnection.State
         phase is CarController.Phase.Scanning -> Icons.AutoMirrored.Filled.BluetoothSearching
         ready -> Icons.Filled.BluetoothConnected
         phase is CarController.Phase.Reconnecting -> Icons.Filled.Bluetooth
+        phase is CarController.Phase.Stopped -> Icons.Filled.Bluetooth
         else -> Icons.Filled.Sync
     }
     Row(
@@ -1034,6 +1058,44 @@ private fun PulseDot(color: Color, animate: Boolean) {
 // endregion
 
 // region — Active: keycard prompt + handshake
+
+@Composable
+private fun ReconnectCard(reason: String, onReconnect: () -> Unit) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
+        color = Color(0x33FBBF24),
+        border = androidx.compose.foundation.BorderStroke(1.dp, Warning.copy(alpha = 0.5f)),
+    ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(
+                "Disconnected",
+                style = MaterialTheme.typography.titleMedium,
+                color = Warning,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                "Auto-reconnect is off until first-time enrollment finishes. " +
+                    "Tap Reconnect, wait for Ready, then press Enroll and tap your keycard.",
+                style = MaterialTheme.typography.bodySmall,
+                color = TextSecondary,
+            )
+            Text(
+                reason,
+                style = MaterialTheme.typography.labelSmall,
+                color = TextMuted,
+                fontFamily = FontFamily.Monospace,
+            )
+            SecondaryButton(
+                modifier = Modifier.fillMaxWidth(),
+                text = "Reconnect",
+                icon = Icons.Filled.Sync,
+                enabled = true,
+                onClick = onReconnect,
+            )
+        }
+    }
+}
 
 @Composable
 private fun KeycardPrompt() {
@@ -1643,6 +1705,7 @@ private fun phaseLabel(phase: CarController.Phase): String = when (phase) {
     is CarController.Phase.Ready -> "Ready"
     is CarController.Phase.Reconnecting ->
         "Retry in ${(phase.remainingMs + 999) / 1000}s · attempt ${phase.attempt}: ${phase.reason}"
+    is CarController.Phase.Stopped -> "Stopped · ${phase.reason}"
 }
 
 private fun sessionStatusLabel(s: TeslaSession.Status): String = when (s) {

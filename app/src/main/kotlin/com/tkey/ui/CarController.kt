@@ -44,6 +44,12 @@ class CarController(
             val attempt: Int,
             val remainingMs: Long,
         ) : Phase()
+        /**
+         * Loop terminated without falling back to Idle so the UI stays on the car view.
+         * Used for unpaired cars where auto-reconnect would yank the BLE link out from
+         * under a user trying to press Enroll — they manually restart instead.
+         */
+        data class Stopped(val reason: String) : Phase()
     }
 
     private val _phase = MutableStateFlow<Phase>(Phase.Idle)
@@ -58,9 +64,15 @@ class CarController(
     private val scope = MainScope()
     private var loopJob: Job? = null
 
-    fun start(vin: String) {
+    /**
+     * @param pairedProvider returns true once the car has completed first-time
+     * enrollment. While it returns false the controller does a single attempt and
+     * gives up on disconnect/failure, so the user can press "Enroll" without the
+     * loop yanking the session out from under them.
+     */
+    fun start(vin: String, pairedProvider: () -> Boolean = { true }) {
         loopJob?.cancel()
-        loopJob = scope.launch { runLoop(vin) }
+        loopJob = scope.launch { runLoop(vin, pairedProvider) }
     }
 
     fun stop() {
@@ -75,7 +87,7 @@ class CarController(
         scope.cancel()
     }
 
-    private suspend fun runLoop(vin: String) {
+    private suspend fun runLoop(vin: String, pairedProvider: () -> Boolean) {
         var failAttempt = 0
         try {
             while (currentCoroutineContext().isActive) {
@@ -83,15 +95,25 @@ class CarController(
                     runOnce(vin, failAttempt)
                     failAttempt = 0
                     awaitDisconnect()
-                    Log.i(TAG, "Link dropped — retrying scan")
                     cleanupSession()
+                    if (!pairedProvider()) {
+                        Log.i(TAG, "Link dropped; car not paired yet — stopping (user must reconnect)")
+                        _phase.value = Phase.Stopped("Link dropped before enrollment")
+                        break
+                    }
+                    Log.i(TAG, "Link dropped — retrying scan")
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Throwable) {
                     cleanupSession()
+                    val reason = e.message ?: e::class.simpleName.orEmpty()
+                    if (!pairedProvider()) {
+                        Log.i(TAG, "Iteration failed before pairing ($reason) — stopping (user must reconnect)")
+                        _phase.value = Phase.Stopped(reason)
+                        break
+                    }
                     failAttempt++
                     val delayMs = backoffMs(failAttempt)
-                    val reason = e.message ?: e::class.simpleName.orEmpty()
                     Log.w(TAG, "Iteration failed ($reason); retrying in ${delayMs}ms (attempt $failAttempt)")
                     countdown(reason, failAttempt, delayMs)
                 }

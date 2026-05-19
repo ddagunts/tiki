@@ -41,11 +41,22 @@ class CarStore(context: Context) {
         val current = list().filterNot { it.vin == vin }
         save(current)
         removeProximity(vin)
+        setPaired(vin, false)
         if (lastVin() == vin) setLastVin(null)
         return current
     }
 
     fun lastVin(): String? = prefs.getString(KEY_LAST_VIN, null)
+
+    /** True once the car has been fully enrolled (keycard-tapped) at least once. */
+    fun isPaired(vin: String): Boolean =
+        prefs.getStringSet(KEY_PAIRED_VINS, emptySet())?.contains(vin) == true
+
+    fun setPaired(vin: String, paired: Boolean) {
+        val current = prefs.getStringSet(KEY_PAIRED_VINS, emptySet())?.toMutableSet() ?: mutableSetOf()
+        val changed = if (paired) current.add(vin) else current.remove(vin)
+        if (changed) prefs.edit().putStringSet(KEY_PAIRED_VINS, current).apply()
+    }
 
     fun setLastVin(vin: String?) {
         val editor = prefs.edit()
@@ -87,6 +98,7 @@ class CarStore(context: Context) {
         private const val PREFS_NAME = "tkey_cars"
         private const val KEY_CARS = "cars"
         private const val KEY_LAST_VIN = "last_vin"
+        private const val KEY_PAIRED_VINS = "paired_vins"
 
         private fun proxKey(vin: String) = "prox_$vin"
     }

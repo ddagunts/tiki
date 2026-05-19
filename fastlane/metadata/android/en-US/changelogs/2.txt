@@ -1,0 +1,4 @@
+Fix first-time setup:
+
+- Auto-reconnect no longer interrupts initial enrollment. While a car is unpaired, a dropped BLE link parks the controller in a Disconnected state instead of looping. A new Reconnect card lets you retry by hand, then press Enroll and tap your keycard without the link being yanked.
+- After the first successful enrollment (or a session that comes back already on the car's whitelist), normal auto-reconnect resumes.
