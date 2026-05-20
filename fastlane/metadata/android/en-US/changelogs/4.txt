@@ -1,0 +1,7 @@
+Phone-as-keycard, smoother proximity, climate fixes, decrypt bug fix.
+
+- Phone-as-keycard (NFC): register the phone itself as an NFC keycard, then tap it on the center-console reader to authorize driving. Lets you leave the physical keycard at home.
+- Proximity unlock toggle is now right on the car's main page (one tap to enable / disable); the full RSSI calibration UI stays in per-car Settings. Single-car users can also hide the "Vehicles" back pill.
+- Climate UI: Climate Keeper and steering-wheel-heat states now show up in the status card; seat-heater pills snap to the tapped level immediately and reconcile with the car; HVAC on/off icons fixed; trunk and charge-port arrows are now actually visible.
+- Bug fix: vehicle-data responses occasionally failed to decrypt (BAD_DECRYPT) — the AES_GCM_RESPONSE AAD was missing DOMAIN / PERSONALIZATION / COUNTER / FLAGS. Now matches Tesla's reference implementation.
+- Proximity FSM: silence (no beacons) no longer pushes EMA toward "far"; brief gaps in the advertisement stream don't flap the lock state.

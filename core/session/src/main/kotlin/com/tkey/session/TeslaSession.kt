@@ -952,13 +952,13 @@ class TeslaSession(
     /**
      * Decrypt an Infotainment reply addressed to one of our outstanding requests.
      *
-     * AAD for [SIGNATURE_TYPE_AES_GCM_RESPONSE]:
-     *   SHA-256( SIG_TYPE=9 ‖ REQUEST_HASH=[sig_type_byte_of_request ‖ request_gcm_tag(16B)]
-     *            [‖ FAULT=<byte> if non-zero] ‖ TAG_END )
-     *
-     * If decryption succeeds and the payload contains [Vehicle.VehicleData], publish it
-     * to [vehicleData]. Otherwise log and drop — non-data Responses (windows, volume) only
-     * need their `actionStatus` for diagnostics, which we already log.
+     * Per Tesla's protocol.md, the AES_GCM_Response AAD is the SHA-256 of:
+     *   SIG_TYPE(AES_GCM_RESPONSE) ‖ DOMAIN ‖ PERSONALIZATION(VIN) ‖ COUNTER
+     *   ‖ FLAGS (of the response, *always* present) ‖ REQUEST_HASH
+     *   ‖ FAULT (only if non-zero) ‖ TAG_END
+     * REQUEST_HASH = SIG_TYPE_byte_of_request ‖ request_gcm_tag(16B). Skipping any of
+     * DOMAIN/PERSONALIZATION/COUNTER/FLAGS causes GCM auth-tag mismatch and a silent
+     * BAD_DECRYPT, which is what bit us in v0.1.2.
      */
     private fun handleInfotainmentResponse(msg: UniversalMessage.RoutableMessage) {
         val state = domainStates[UniversalMessage.Domain.DOMAIN_INFOTAINMENT]
@@ -982,14 +982,23 @@ class TeslaSession(
             Signatures.SignatureType.SIGNATURE_TYPE_AES_GCM_PERSONALIZED.number.toByte(),
         ) + pending.tag
         val fault = msg.signedMessageStatus.signedMessageFault.number
-        val aadBuilder = Metadata.sha256()
+        // Mirrors `responseMetadata` in vehicle-command/internal/authentication/peer.go:
+        // every field is always included (no zero-skip), and FAULT/COUNTER/FLAGS go in as
+        // uint32 BE — not as single bytes. Missing FAULT or downcasting it to one byte
+        // makes the AAD mismatch and GCM fails with BAD_DECRYPT even on a successful
+        // (fault=0) response.
+        val aad = Metadata.sha256()
             .addByte(
                 Metadata.Tag.SIGNATURE_TYPE,
                 Signatures.SignatureType.SIGNATURE_TYPE_AES_GCM_RESPONSE.number,
             )
+            .addByte(Metadata.Tag.DOMAIN, UniversalMessage.Domain.DOMAIN_INFOTAINMENT.number)
+            .add(Metadata.Tag.PERSONALIZATION, vin.toByteArray(Charsets.US_ASCII))
+            .addUint32BE(Metadata.Tag.COUNTER, respSig.counter)
+            .addUint32BE(Metadata.Tag.FLAGS, msg.flags)
             .add(Metadata.Tag.REQUEST_HASH, requestHash)
-        if (fault != 0) aadBuilder.addByte(Metadata.Tag.FAULT, fault)
-        val aad = aadBuilder.checksum()
+            .addUint32BE(Metadata.Tag.FAULT, fault)
+            .checksum()
 
         val ciphertext = msg.protobufMessageAsBytes.toByteArray()
         val plaintext = try {
@@ -1000,7 +1009,13 @@ class TeslaSession(
                 aad,
             )
         } catch (e: Throwable) {
-            Log.w(TAG, "Infotainment decrypt failed for ${pending.label}: ${e.message}")
+            Log.w(
+                TAG,
+                "Infotainment decrypt failed for ${pending.label}: ${e.message} " +
+                    "resp.counter=${respSig.counter} msg.flags=${msg.flags} " +
+                    "msgStatus.op=${msg.signedMessageStatus.operationStatus} fault=$fault " +
+                    "reqHash=${requestHash.toHex()} aad=${aad.toHex()}",
+            )
             return
         }
 

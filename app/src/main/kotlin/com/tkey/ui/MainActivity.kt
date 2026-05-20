@@ -48,6 +48,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.automirrored.filled.BluetoothSearching
 import androidx.compose.material.icons.automirrored.filled.VolumeDown
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
@@ -67,14 +69,13 @@ import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Nfc
-import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Power
+import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Security
@@ -124,6 +125,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
@@ -312,13 +314,18 @@ private fun Screen(modifier: Modifier = Modifier) {
                 )
             }
         } else if (active) {
-            BackPill(label = "Vehicles", onClick = {
-                controller.stop()
-                vin = ""
-                selectedName = null
-                statusError = null
-                subscreen = "main"
-            })
+            // Single-car users can opt to hide the back pill — they never need to switch cars,
+            // and reclaiming that vertical slice keeps the hero card at the very top.
+            val showBackPill = cars.size > 1 || !carStore.hideBackToVehicles()
+            if (showBackPill) {
+                BackPill(label = "Vehicles", onClick = {
+                    controller.stop()
+                    vin = ""
+                    selectedName = null
+                    statusError = null
+                    subscreen = "main"
+                })
+            }
             HeroCard(
                 name = selectedName ?: "Tesla",
                 vin = vin,
@@ -391,7 +398,13 @@ private fun Screen(modifier: Modifier = Modifier) {
                             onAdvanced = { subscreen = "advanced" },
                         )
 
-                        VehicleStatusCard(vehicleStatus, vehicleData)
+                        ProximityToggleCard(
+                            vin = vin,
+                            carStore = carStore,
+                            onOpenSettings = { settingsVin = vin },
+                        )
+
+                        VehicleStatusCard(vehicleStatus)
 
                         PowerChargingCard(vehicleData)
 
@@ -839,17 +852,15 @@ private fun HeroCard(
 
                 Spacer(Modifier.width(14.dp))
 
+                // Center column floats between the orb and refresh chip; both circles end up
+                // vertically centered against this row, putting all three on the same baseline.
                 Column(modifier = Modifier.weight(1f)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            stateLabel,
-                            style = MaterialTheme.typography.labelMedium.copy(letterSpacing = 1.8.sp),
-                            color = ringColor,
-                            fontWeight = FontWeight.SemiBold,
-                            modifier = Modifier.weight(1f),
-                        )
-                        InlineRefreshChip(enabled = refreshEnabled, onClick = onRefresh)
-                    }
+                    Text(
+                        stateLabel,
+                        style = MaterialTheme.typography.labelMedium.copy(letterSpacing = 1.8.sp),
+                        color = ringColor,
+                        fontWeight = FontWeight.SemiBold,
+                    )
                     Spacer(Modifier.height(4.dp))
                     val now = rememberNowMs()
                     val sub = when (phase) {
@@ -863,7 +874,7 @@ private fun HeroCard(
                             if (hasStatus) {
                                 val received = vehicleStatus!!.receivedAtMs
                                 val ageSec = ((now - received) / 1000).coerceAtLeast(0)
-                                "Updated ${formatLocalTime(received)} · ${ageSec}s ago"
+                                "Updated ${formatLocalTime(received)}\n${ageSec}s ago"
                             } else "Waiting for vehicle status…"
                         else -> ""
                     }
@@ -875,6 +886,10 @@ private fun HeroCard(
                         )
                     }
                 }
+
+                Spacer(Modifier.width(14.dp))
+
+                InlineRefreshChip(enabled = refreshEnabled, onClick = onRefresh)
             }
         }
     }
@@ -938,32 +953,34 @@ private fun RangeChip(miles: Float, batteryPct: Int?) {
             .clip(RoundedCornerShape(999.dp))
             .background(GraphiteHi)
             .border(1.dp, Hairline, RoundedCornerShape(999.dp))
-            .padding(horizontal = 10.dp, vertical = 6.dp),
+            .padding(horizontal = 14.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(
             Icons.Filled.BatteryChargingFull,
             contentDescription = null,
             tint = Accent,
-            modifier = Modifier.size(14.dp),
+            modifier = Modifier.size(20.dp),
         )
-        Spacer(Modifier.width(6.dp))
+        Spacer(Modifier.width(8.dp))
         val rangeText = "${miles.toInt()} mi"
         val pctText = batteryPct?.let { " · $it%" } ?: ""
         Text(
             rangeText + pctText,
-            style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 0.6.sp),
+            style = MaterialTheme.typography.titleMedium.copy(letterSpacing = 0.4.sp),
             color = MaterialTheme.colorScheme.onBackground,
             fontFamily = FontFamily.SansSerif,
+            fontWeight = FontWeight.SemiBold,
         )
     }
 }
 
 @Composable
 private fun InlineRefreshChip(enabled: Boolean, onClick: () -> Unit) {
+    // Sized to match LockOrb (82.dp) so the two anchor the hero row symmetrically.
     Box(
         modifier = Modifier
-            .size(40.dp)
+            .size(82.dp)
             .clip(CircleShape)
             .background(GraphiteHi)
             .border(1.dp, Hairline, CircleShape)
@@ -975,7 +992,7 @@ private fun InlineRefreshChip(enabled: Boolean, onClick: () -> Unit) {
             Icons.Filled.Refresh,
             contentDescription = "Refresh status",
             tint = Accent,
-            modifier = Modifier.size(22.dp),
+            modifier = Modifier.size(36.dp),
         )
     }
 }
@@ -1136,32 +1153,36 @@ private fun ActionGrid(
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
             ActionTile(
                 modifier = Modifier.weight(1f),
-                icon = Icons.Filled.KeyboardArrowUp,
-                label = "Trunk ↑",
+                icon = Icons.Filled.ArrowUpward,
+                label = "Open trunk",
                 enabled = enabled,
+                iconSize = 24.dp,
                 onClick = onTrunkOpen,
             )
             ActionTile(
                 modifier = Modifier.weight(1f),
-                icon = Icons.Filled.KeyboardArrowDown,
-                label = "Trunk ↓",
+                icon = Icons.Filled.ArrowDownward,
+                label = "Close trunk",
                 enabled = enabled,
+                iconSize = 24.dp,
                 onClick = onTrunkClose,
             )
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
             ActionTile(
                 modifier = Modifier.weight(1f),
-                icon = Icons.Filled.Power,
-                label = "Charge port ↑",
+                icon = Icons.Filled.ArrowUpward,
+                label = "Open port",
                 enabled = enabled,
+                iconSize = 24.dp,
                 onClick = onPortOpen,
             )
             ActionTile(
                 modifier = Modifier.weight(1f),
-                icon = Icons.Filled.Power,
-                label = "Charge port ↓",
+                icon = Icons.Filled.ArrowDownward,
+                label = "Close port",
                 enabled = enabled,
+                iconSize = 24.dp,
                 onClick = onPortClose,
             )
         }
@@ -1207,6 +1228,7 @@ private fun ActionTile(
     label: String,
     enabled: Boolean,
     accent: Color = Accent,
+    iconSize: Dp = 17.dp,
     onClick: () -> Unit,
 ) {
     val tint = if (enabled) accent else TextMuted
@@ -1228,7 +1250,7 @@ private fun ActionTile(
                 .background(tint.copy(alpha = 0.14f)),
             contentAlignment = Alignment.Center,
         ) {
-            Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(17.dp))
+            Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(iconSize))
         }
         Spacer(Modifier.width(9.dp))
         Text(
@@ -1275,10 +1297,78 @@ private fun SecondaryButton(
 // region — Vehicle status card
 
 @Composable
-private fun VehicleStatusCard(
-    snapshot: TeslaSession.VehicleStatusSnapshot?,
-    vehicleData: TeslaSession.VehicleDataSnapshot?,
+private fun ProximityToggleCard(
+    vin: String,
+    carStore: CarStore,
+    onOpenSettings: () -> Unit,
 ) {
+    val ctx = LocalContext.current
+    val configs by ProximityRegistry.configs.collectAsState()
+    // Mirror persisted state so the switch reflects toggles immediately while the registry
+    // refresh round-trips through SharedPreferences + service start/stop.
+    var enabled by remember(vin) { mutableStateOf(carStore.getProximity(vin).enabled) }
+    LaunchedEffect(configs, vin) {
+        enabled = configs[vin]?.enabled ?: carStore.getProximity(vin).enabled
+    }
+
+    val notifPermLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { /* harmless if denied — notification just won't be visible */ }
+
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
+        color = Graphite,
+        border = androidx.compose.foundation.BorderStroke(1.dp, Hairline),
+    ) {
+        Row(
+            modifier = Modifier
+                .clickable(onClick = onOpenSettings)
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    "Proximity unlock",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onBackground,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    if (enabled) "On — tap to calibrate" else "Off — tap to set up",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = TextSecondary,
+                )
+            }
+            Spacer(Modifier.width(12.dp))
+            Switch(
+                checked = enabled,
+                onCheckedChange = { on ->
+                    if (on &&
+                        Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                        ctx.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=
+                        PackageManager.PERMISSION_GRANTED
+                    ) {
+                        notifPermLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    }
+                    enabled = on
+                    val cur = carStore.getProximity(vin)
+                    carStore.setProximity(vin, cur.copy(enabled = on))
+                    ProximityRegistry.refresh(ctx)
+                },
+                colors = SwitchDefaults.colors(
+                    checkedThumbColor = Ink,
+                    checkedTrackColor = Accent,
+                    uncheckedTrackColor = GraphiteHi,
+                    uncheckedBorderColor = Hairline,
+                ),
+            )
+        }
+    }
+}
+
+@Composable
+private fun VehicleStatusCard(snapshot: TeslaSession.VehicleStatusSnapshot?) {
     SectionLabel("Vehicle status")
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -1286,9 +1376,7 @@ private fun VehicleStatusCard(
         color = Graphite,
         border = androidx.compose.foundation.BorderStroke(1.dp, Hairline),
     ) {
-        val cs = vehicleData?.data?.chargeState
-        val rangeText = cs?.let { rangeAndBatteryText(it) }
-        if (snapshot == null && rangeText == null) {
+        if (snapshot == null) {
             Box(modifier = Modifier.fillMaxWidth().padding(20.dp), contentAlignment = Alignment.Center) {
                 Text(
                     "Waiting for vehicle status…",
@@ -1296,20 +1384,11 @@ private fun VehicleStatusCard(
                     color = TextMuted,
                 )
             }
-        } else if (snapshot == null) {
-            // No VCSEC status yet, but infotainment data is in — surface what we have.
-            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                StatusRow("Range", rangeText!!, tone = Tone.Good)
-            }
         } else {
             val s = snapshot.status
             val closures = s.closureStatuses
             val tonneauPct = s.detailedClosureStatus.tonneauPercentOpen
             Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                if (rangeText != null) {
-                    StatusRow("Range", rangeText, tone = Tone.Good)
-                    Divider()
-                }
                 StatusRow("Lock", lockLabel(s.vehicleLockState), tone = lockTone(s.vehicleLockState))
                 StatusRow("Sleep", sleepLabel(s.vehicleSleepStatus), tone = sleepTone(s.vehicleSleepStatus))
                 StatusRow("User presence", userLabel(s.userPresence), tone = userTone(s.userPresence))
@@ -1392,6 +1471,8 @@ private fun ClimateSummaryCard(vehicleData: TeslaSession.VehicleDataSnapshot?) {
     val inside = if (climate.hasInsideTempCelsius()) "%.0f°C".format(climate.insideTempCelsius) else null
     val outside = if (climate.hasOutsideTempCelsius()) "%.0f°C".format(climate.outsideTempCelsius) else null
     val setpoint = if (climate.hasDriverTempSetting()) "%.0f°C".format(climate.driverTempSetting) else null
+    val keeperLabel = climate.climateKeeperLabel()
+    val stwHeat = climate.steeringWheelHeatActive()
 
     SectionLabel("Climate")
     Surface(
@@ -1412,6 +1493,10 @@ private fun ClimateSummaryCard(vehicleData: TeslaSession.VehicleDataSnapshot?) {
             if (climate.hasIsPreconditioning() && climate.isPreconditioning) {
                 StatusRow("Preconditioning", "ON", tone = Tone.Good)
             }
+            if (stwHeat) {
+                StatusRow("Wheel heat", "ON", tone = Tone.Good)
+            }
+            keeperLabel?.let { StatusRow("Climate keeper", it, tone = Tone.Good) }
         }
     }
 }
@@ -1774,14 +1859,6 @@ private fun closureLabel(v: Vcsec.ClosureState_E): String = when (v) {
     else -> v.name
 }
 
-private fun rangeAndBatteryText(cs: Vehicle.ChargeState): String? {
-    val hasRange = cs.hasBatteryRange() || cs.hasEstBatteryRange()
-    if (!hasRange) return null
-    val miles = if (cs.hasEstBatteryRange()) cs.estBatteryRange else cs.batteryRange
-    val pct = if (cs.hasBatteryLevel()) cs.batteryLevel else null
-    return "${miles.toInt()} mi" + (pct?.let { " · ${it}%" } ?: "")
-}
-
 private fun closureTone(v: Vcsec.ClosureState_E): Tone = when (v) {
     Vcsec.ClosureState_E.CLOSURESTATE_CLOSED -> Tone.Good
     Vcsec.ClosureState_E.CLOSURESTATE_OPEN -> Tone.Warn
@@ -1867,7 +1944,7 @@ private fun ComfortScreen(
     val driverTempC = if (climate?.hasDriverTempSetting() == true) climate.driverTempSetting else 21f
     val passengerTempC = if (climate?.hasPassengerTempSetting() == true) climate.passengerTempSetting else driverTempC
     val climateOn = climate?.hasIsClimateOn() == true && climate.isClimateOn
-    val stwHeat = climate?.hasSteeringWheelHeater() == true && climate.steeringWheelHeater
+    val stwHeat = climate?.steeringWheelHeatActive() == true
     val bio = climate?.hasBioweaponModeOn() == true && climate.bioweaponModeOn
     val precondMax = climate?.hasIsPreconditioning() == true && climate.isPreconditioning
 
@@ -1904,7 +1981,7 @@ private fun ComfortScreen(
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                 ActionTile(
                     modifier = Modifier.weight(1f),
-                    icon = Icons.Filled.Whatshot,
+                    icon = Icons.Filled.Thermostat,
                     label = if (climateOn) "Climate ON" else "Turn ON",
                     enabled = enabled,
                     accent = if (climateOn) Success else Accent,
@@ -1912,7 +1989,7 @@ private fun ComfortScreen(
                 )
                 ActionTile(
                     modifier = Modifier.weight(1f),
-                    icon = Icons.Filled.AcUnit,
+                    icon = Icons.Filled.PowerSettingsNew,
                     label = "Turn OFF",
                     enabled = enabled,
                     onClick = { run { session.climateOff() } },
@@ -1958,27 +2035,27 @@ private fun ComfortScreen(
                 }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                PillBtn(
+                OptimisticTogglePill(
                     modifier = Modifier.weight(1f),
-                    text = "Wheel heat: " + if (stwHeat) "ON" else "OFF",
-                    selected = stwHeat,
+                    labelPrefix = "Wheel heat",
+                    state = stwHeat,
                     enabled = enabled,
-                    onClick = { run { session.setSteeringWheelHeater(!stwHeat) } },
+                    onToggle = { run { session.setSteeringWheelHeater(it) } },
                 )
-                PillBtn(
+                OptimisticTogglePill(
                     modifier = Modifier.weight(1f),
-                    text = "Precond Max: " + if (precondMax) "ON" else "OFF",
-                    selected = precondMax,
+                    labelPrefix = "Precond Max",
+                    state = precondMax,
                     enabled = enabled,
-                    onClick = { run { session.setPreconditioningMax(!precondMax) } },
+                    onToggle = { run { session.setPreconditioningMax(it) } },
                 )
             }
-            PillBtn(
+            OptimisticTogglePill(
                 modifier = Modifier.fillMaxWidth(),
-                text = "Bioweapon defense: " + if (bio) "ON" else "OFF",
-                selected = bio,
+                labelPrefix = "Bioweapon defense",
+                state = bio,
                 enabled = enabled,
-                onClick = { run { session.setBioweaponMode(!bio) } },
+                onToggle = { run { session.setBioweaponMode(it) } },
             )
         }
 
@@ -2132,6 +2209,32 @@ private fun ComfortScreen(
 }
 
 @Composable
+private fun OptimisticTogglePill(
+    labelPrefix: String,
+    state: Boolean,
+    enabled: Boolean,
+    onToggle: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var optimistic by remember { mutableStateOf<Boolean?>(null) }
+    LaunchedEffect(state) {
+        if (optimistic != null && state == optimistic) optimistic = null
+    }
+    val displayed = optimistic ?: state
+    PillBtn(
+        modifier = modifier,
+        text = "$labelPrefix: " + if (displayed) "ON" else "OFF",
+        selected = displayed,
+        enabled = enabled,
+        onClick = {
+            val next = !displayed
+            optimistic = next
+            onToggle(next)
+        },
+    )
+}
+
+@Composable
 private fun SeatRow(
     label: String,
     current: Int?,
@@ -2139,7 +2242,10 @@ private fun SeatRow(
     onSet: (TeslaSession.HeaterLevel) -> Unit,
 ) {
     var optimistic by remember { mutableStateOf<Int?>(null) }
-    val displayed = current ?: optimistic ?: 0
+    LaunchedEffect(current) {
+        if (optimistic != null && current != null && current == optimistic) optimistic = null
+    }
+    val displayed = optimistic ?: current ?: 0
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         SubLabel(label.uppercase())
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
@@ -2170,7 +2276,10 @@ private fun SeatCoolerRow(
     onSet: (TeslaSession.CoolerLevel) -> Unit,
 ) {
     var optimistic by remember { mutableStateOf<Int?>(null) }
-    val displayed = current ?: optimistic ?: 0
+    LaunchedEffect(current) {
+        if (optimistic != null && current != null && current == optimistic) optimistic = null
+    }
+    val displayed = optimistic ?: current ?: 0
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         SubLabel(label.uppercase())
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
@@ -2229,6 +2338,25 @@ private fun Vehicle.ClimateState.seatFanFrontLeftIfHas(): Int? =
 
 private fun Vehicle.ClimateState.seatFanFrontRightIfHas(): Int? =
     if (hasSeatFanFrontRight()) seatFanFrontRight else null
+
+private fun Vehicle.ClimateState.steeringWheelHeatActive(): Boolean {
+    if (hasSteeringWheelHeater() && steeringWheelHeater) return true
+    if (hasSteeringWheelHeatLevel()) {
+        val lvl = steeringWheelHeatLevel
+        if (lvl == com.tesla.generated.carserver.common.Common.StwHeatLevel.StwHeatLevel_Low ||
+            lvl == com.tesla.generated.carserver.common.Common.StwHeatLevel.StwHeatLevel_High
+        ) return true
+    }
+    return false
+}
+
+private fun Vehicle.ClimateState.climateKeeperLabel(): String? =
+    when (climateKeeperMode?.typeCase) {
+        Vehicle.ClimateState.ClimateKeeperMode.TypeCase.ON -> "On"
+        Vehicle.ClimateState.ClimateKeeperMode.TypeCase.DOG -> "Dog"
+        Vehicle.ClimateState.ClimateKeeperMode.TypeCase.PARTY -> "Camp"
+        else -> null
+    }
 
 // endregion
 
@@ -2734,16 +2862,15 @@ private fun ProximitySettingsScreen(
                 Spacer(Modifier.width(10.dp))
                 Column {
                     Text(
-                        "Auto-lock has a Tesla-side delay",
+                        "Auto-lock isn't instant",
                         style = MaterialTheme.typography.titleSmall,
                         color = Warning,
                         fontWeight = FontWeight.SemiBold,
                     )
                     Spacer(Modifier.height(2.dp))
                     Text(
-                        "The car only broadcasts BLE while sleeping. After you drive off, " +
-                            "the car stays awake for several minutes before sleeping again — auto-lock fires " +
-                            "shortly after that point, not the instant you walk away.",
+                        "Lock fires once the phone's signal stays weak for the dwell period, " +
+                            "not the instant you step away.",
                         style = MaterialTheme.typography.bodySmall,
                         color = TextSecondary,
                     )
@@ -2905,6 +3032,51 @@ private fun ProximitySettingsScreen(
                             fontFamily = FontFamily.Monospace,
                         )
                     }
+                }
+            }
+        }
+
+        // Single-car users can hide the "Vehicles" back pill to declutter the active screen.
+        // With 2+ cars the back pill is the only way to switch, so this toggle is hidden too.
+        if (store.list().size <= 1) {
+            SectionLabel("App preferences")
+            var hidePill by remember { mutableStateOf(store.hideBackToVehicles()) }
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(20.dp),
+                color = Graphite,
+                border = androidx.compose.foundation.BorderStroke(1.dp, Hairline),
+            ) {
+                Row(
+                    modifier = Modifier.padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            "Hide \"Vehicles\" button",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onBackground,
+                        )
+                        Text(
+                            "Removes the back-to-vehicles pill on the car screen. Useful when you only have one car.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextSecondary,
+                        )
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Switch(
+                        checked = hidePill,
+                        onCheckedChange = { on ->
+                            hidePill = on
+                            store.setHideBackToVehicles(on)
+                        },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Ink,
+                            checkedTrackColor = Accent,
+                            uncheckedTrackColor = GraphiteHi,
+                            uncheckedBorderColor = Hairline,
+                        ),
+                    )
                 }
             }
         }

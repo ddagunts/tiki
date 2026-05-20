@@ -64,6 +64,16 @@ class CarStore(context: Context) {
         editor.apply()
     }
 
+    /**
+     * If true, the active-vehicle screen omits the "Vehicles" back pill. Only takes effect when
+     * there's exactly one saved car — otherwise the back pill is the only way to switch cars.
+     */
+    fun hideBackToVehicles(): Boolean = prefs.getBoolean(KEY_HIDE_BACK_PILL, false)
+
+    fun setHideBackToVehicles(hide: Boolean) {
+        prefs.edit().putBoolean(KEY_HIDE_BACK_PILL, hide).apply()
+    }
+
     fun getProximity(vin: String): ProximityConfig {
         val raw = prefs.getString(proxKey(vin), null) ?: return ProximityConfig()
         return runCatching { ProximityConfig.fromJson(JSONObject(raw)) }.getOrDefault(ProximityConfig())
@@ -99,6 +109,7 @@ class CarStore(context: Context) {
         private const val KEY_CARS = "cars"
         private const val KEY_LAST_VIN = "last_vin"
         private const val KEY_PAIRED_VINS = "paired_vins"
+        private const val KEY_HIDE_BACK_PILL = "hide_back_pill"
 
         private fun proxKey(vin: String) = "prox_$vin"
     }

@@ -7,7 +7,8 @@ tiki is a Tesla key for Android. It talks the public Tesla BLE key protocol over
 Once paired with the car, tiki can:
 
 * Lock and unlock the doors
-* Auto-unlock on approach and auto-lock on departure with opt-in per-car Proximity unlock (beta)
+* Auto-unlock on approach and auto-lock on departure with opt-in per-car Proximity unlock (beta) — toggle right on the car's main page, calibrate in per-car Settings
+* Phone-as-keycard (NFC): register the phone itself as an NFC keycard, then tap it on the center-console reader to authorize driving
 * Open and close the trunk and charge port; vent and close the windows
 * Climate: toggle climate, set driver / passenger target temperatures (with 68 / 72 °F presets), bioweapon-defense mode, steering-wheel heat, precondition max
 * Audio / media: play / pause, next / previous track, next / previous favorite, volume up / down
@@ -26,7 +27,7 @@ Once paired with the car, tiki can:
 
 <b>How it works under the hood</b>
 
-* BLE discovery: matches the Tesla-broadcast T&lt;8-byte-VIN-hash&gt; short-name beacon for your VIN
+* BLE discovery: matches the Tesla-broadcast S&lt;hex(SHA1(VIN)[:8])&gt;C short-name beacon for your VIN
 * GATT connect, MTU negotiation, notifications enabled on the vehicle's RX / TX characteristics
 * ECDH (P-256) with the vehicle's static public key inside Android Keystore
 * AES-128-GCM session keyed per the Tesla reference implementation

@@ -27,8 +27,7 @@ private half never leaves it.
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/settings_disabled.png" alt="Settings screen with Proximity unlock disabled" width="240">
-  <img src="docs/screenshots/settings_proximity.png" alt="Settings screen with Proximity unlock enabled, showing RSSI sliders, live readout, and dwell sliders" width="240">
+  <img src="docs/screenshots/settings_proximity.png" alt="Settings screen with Proximity unlock enabled — RSSI sliders, live readout, dwell sliders, and the App preferences section with the Hide-Vehicles-button toggle" width="240">
 </p>
 
 ---
@@ -52,7 +51,9 @@ Once paired with the car, TKey can:
 
 - **Lock** and **unlock** the doors
 - **Auto-unlock on approach and auto-lock on departure** when you opt into per-car
-  Proximity unlock *(beta)* — see [Proximity unlock](#proximity-unlock-beta-opt-in) below
+  Proximity unlock *(beta)* — see [Proximity unlock](#proximity-unlock-beta-opt-in) below.
+  The on/off toggle lives right on the car's main page so it's one tap away; the full
+  RSSI calibration UI is in the per-car Settings screen.
 - Open and close the **trunk** and the **charge port**; **vent** and **close** the windows
 - **Climate**: turn climate on/off, set driver / passenger target temperatures (one-tap
   **68 °F / 72 °F** presets, in addition to whatever the car already has set), toggle
@@ -68,11 +69,16 @@ Once paired with the car, TKey can:
   individual closures including **frunk** and **tonneau** (Cybertruck),
   **remaining range / battery %**, etc.)
 - **Auto-reconnect** with backoff whenever the BLE link drops
+- **Phone-as-keycard (NFC)** — register the phone itself as an NFC keycard so you can
+  tap it on the center-console reader to authorize driving (see
+  [Driving the car (NFC)](#driving-the-car-nfc))
+- **Single-car polish:** if you only have one Tesla, you can hide the "Vehicles" back
+  pill from the car screen — toggle in per-car Settings under *App preferences*
 
 It runs the BLE leg of the Tesla key protocol end-to-end:
 
-1. mDNS-free BLE discovery: matches the Tesla-broadcast `T<8-byte-VIN-hash>` short-name
-   beacon for your VIN
+1. mDNS-free BLE discovery: matches the Tesla-broadcast `S<hex(SHA1(VIN)[:8])>C`
+   short-name beacon for your VIN
 2. GATT connect, MTU negotiation, notification enablement on the vehicle's RX/TX
    characteristics
 3. ECDH (P-256) with the vehicle's static public key inside Android Keystore
@@ -85,9 +91,7 @@ It runs the BLE leg of the Tesla key protocol end-to-end:
 - **Not a replacement for the official Tesla app.** It can't watch sentry video or talk
   to the car when you're not standing next to it. Anything that needs Tesla's cloud is
   out of scope by design.
-- **Not a long-range key.** BLE range is roughly walking-up-to-the-car distance. The car
-  also only advertises while asleep — once you're inside or the car is awake from another
-  source, it stops broadcasting until it sleeps again.
+- **Not a long-range key.** BLE range is roughly walking-up-to-the-car distance.
 - **Not a UWB phone-as-key.** Proximity unlock here uses BLE RSSI, which is good enough
   for "walk up to the car and the doors unlock" but lacks the centimeter-accurate
   positioning of the iPhone / Android UWB experience.
@@ -103,7 +107,9 @@ It runs the BLE leg of the Tesla key protocol end-to-end:
 > to calibrate per car using the live RSSI readout below, and keep your physical key /
 > phone-app fallback handy.
 
-In a saved car's **Settings**, flip on **Proximity unlock** to get walk-up entry. TKey
+Flip on **Proximity unlock** to get walk-up entry. The toggle is available both on the
+car's main page (one tap to enable/disable while you're already looking at the car) and in
+the per-car **Settings** screen alongside the calibration sliders. Once enabled, TKey
 runs a small foreground service that watches the car's BLE beacon, smooths the RSSI with
 an exponential moving average, and dispatches a real RKE unlock when the signal crosses
 your **Unlock RSSI** threshold — and a lock when it drops below your **Lock RSSI**
@@ -131,12 +137,11 @@ enabled. Nothing runs when the feature is off.
 
 ### Caveats
 
-- **Auto-lock fires only after the car re-sleeps.** Tesla cars only advertise BLE while
-  sleeping; the moment you open a door the car wakes and goes radio-silent until its
-  sleep timer expires (typically several minutes after last activity). Auto-lock needs a
-  fresh weak beacon to fire — which means it triggers shortly after the car has gone
-  back to sleep at its new location, not the instant you walk away. The Settings screen
-  surfaces this caveat in-app.
+- **Auto-lock isn't instant.** Lock fires once your phone's smoothed RSSI sits below
+  the **Lock RSSI** threshold for the **depart dwell** window — not the moment you
+  step out. The dwell timer (default ~5 s) is there to keep a brief signal dip from
+  flapping the lock state; you can tune it from the Settings screen if you want it
+  snappier or more conservative.
 - **Range is BLE range.** Roughly the inside of your driveway / garage. Don't expect
   walk-up unlock from across the street.
 - **Proximity is per-car.** Enable it on the cars you actually use; the others stay in
@@ -253,8 +258,7 @@ actively scanning, and drops near zero while it's paused waiting for motion.
 
 Before TKey can do anything, the car has to remember its public key.
 
-1. Make sure your car is **asleep** (this is when it advertises BLE — typically after
-   ~10 minutes parked and untouched).
+1. Park the car within BLE range of your phone (driveway, garage, parking spot).
 2. In TKey, **Add vehicle**, give it a friendly name, paste your 17-character VIN.
 3. Tap the car tile. TKey scans, finds the beacon, connects, and starts a session.
 4. When the hero card shows the amber **TAP KEYCARD NOW** banner, place your physical
@@ -276,14 +280,15 @@ to authenticate a key to the car's NFC reader on the center console (between the
 cup holders). A tap of your physical Tesla keycard is enough; the car then lets you
 shift out of Park.
 
-There's a useful corollary: because the phone is itself an enrolled key after pairing,
-**you can disable Bluetooth on the phone entirely and use NFC for everything**. Tap the
-back of the phone to the **B-pillar** NFC reader to unlock or lock, and to the
-**center-console** reader to authorize driving. In that mode TKey isn't involved at
-runtime at all — the pairing it performed just installs your phone's public key on the
-car; the car's NFC stack does the rest. Handy if you want to keep BLE off, or as a
-fallback if BLE connectivity is misbehaving on a particular phone or in a particular
-garage.
+There's a useful corollary: once you've separately registered the phone as an NFC
+keycard (per-car **Settings → Phone-as-keycard → Pair phone as keycard**, which
+authorizes the car over BLE with a keycard tap), **you can disable Bluetooth on the
+phone entirely and use NFC for everything**. Tap the back of the phone to the
+**B-pillar** NFC reader to unlock or lock, and to the **center-console** reader to
+authorize driving. In that mode TKey isn't involved at runtime at all — the keycard
+enrollment installed the phone's NFC identity on the car and the car's NFC stack does
+the rest. Handy if you want to keep BLE off, or as a fallback if BLE connectivity is
+misbehaving on a particular phone or in a particular garage.
 
 ## Building from source
 
@@ -367,9 +372,8 @@ You can verify all of the above yourself by inspecting the installed APK with
 ## Compatibility notes
 
 - Tested against current Model 3 / Y / S / X / Cybertruck firmware.
-- The car only advertises BLE while sleeping. If the app says **SCANNING** for more than
-  a few seconds, briefly tap a door handle to wake the car so it broadcasts again — or
-  wait for the car to fall asleep on its own.
+- If the app says **SCANNING** for more than a few seconds, briefly tap a door handle
+  to nudge the BLE radio — most stalls clear up immediately after that.
 - Some phones' BLE scanners silently drop short-name-only Tesla advertisements through
   `BluetoothLeScanner.startScan`. TKey works around this on affected devices by falling
   back to `BluetoothAdapter.startDiscovery`.
@@ -390,16 +394,19 @@ Best-effort. Things that work today:
   and absolute set
 - Sentry mode toggle, flash lights, honk horn
 - **Proximity unlock**: per-car RSSI-based auto-unlock and auto-lock with hysteresis,
-  dwell timers, live RSSI calibration, and motion-aware foreground-service auto-pause
+  dwell timers, live RSSI calibration, and motion-aware foreground-service auto-pause.
+  Enable/disable from the car's main page; calibrate from per-car Settings.
 - Keycard enrollment of new phones
+- Phone-as-keycard NFC enrollment so a phone tap to the center-console reader
+  authorizes driving
 - Hardware-backed P-256 identity, AES-GCM session crypto
+- Optional hide of the "Vehicles" back pill for single-car owners
 
 Things that don't (yet):
 
 - Drive authorization (the "PIN to drive" path) — for now, tap a Tesla keycard or
   the paired phone itself to the **center-console NFC reader** to authorize driving
   (see [Driving the car (NFC)](#driving-the-car-nfc))
-- A Gradle wrapper (`gradlew`) — currently you need the gradle binary Studio downloads
 
 If something doesn't work for your car, open an issue with the **Diagnostics** panel
 contents (it's intentionally PII-free — there's no VIN, no GPS, no account ID, just

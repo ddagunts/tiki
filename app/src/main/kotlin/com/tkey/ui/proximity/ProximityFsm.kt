@@ -7,10 +7,11 @@ package com.tkey.ui.proximity
  * [ProximityConfig.enterDwellMs]; enter FAR (and fire Lock) when it sits below
  * [ProximityConfig.lockRssi] for [ProximityConfig.exitDwellMs].
  *
- * Critical: silence (no beacons observed) does NOT push the EMA. Tesla cars only advertise
- * while sleeping, so a silent radio after an unlock usually means the user got in and the
- * car woke up — not that the user walked away. Treating silence as "far" would falsely
- * lock the user in moments after they unlocked.
+ * Critical: silence (no beacons observed) does NOT push the EMA. Brief gaps in the
+ * advertisement stream are common (radio scheduling, Bluetooth stack hiccups) and don't
+ * mean the user walked away. Treating silence as "far" would falsely lock the user in
+ * moments after they unlocked. Distance has to come from an actually weak RSSI, not from
+ * the absence of samples.
  *
  * Fallback: if NEAR persists past [STALE_NEAR_TIMEOUT_MS] without any beacon (the user
  * likely drove off and parked somewhere we can't see), we transition back to FAR and emit
