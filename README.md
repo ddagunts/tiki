@@ -267,6 +267,24 @@ auto-resumes the connection — open the app, walk up to the car, hit Unlock.
 If you remove the app or replace your phone, the keypair is gone and you'll need to
 re-enroll with the keycard.
 
+## Driving the car (NFC)
+
+TKey covers the BLE leg of the Tesla key protocol — unlock, climate, charging, status,
+and everything else listed above. It does **not** yet implement the "PIN to drive"
+authorization path, so to actually *drive away* after unlocking with TKey, you still need
+to authenticate a key to the car's NFC reader on the center console (between the front
+cup holders). A tap of your physical Tesla keycard is enough; the car then lets you
+shift out of Park.
+
+There's a useful corollary: because the phone is itself an enrolled key after pairing,
+**you can disable Bluetooth on the phone entirely and use NFC for everything**. Tap the
+back of the phone to the **B-pillar** NFC reader to unlock or lock, and to the
+**center-console** reader to authorize driving. In that mode TKey isn't involved at
+runtime at all — the pairing it performed just installs your phone's public key on the
+car; the car's NFC stack does the rest. Handy if you want to keep BLE off, or as a
+fallback if BLE connectivity is misbehaving on a particular phone or in a particular
+garage.
+
 ## Building from source
 
 Pinned to Android Studio Panda Patch 4 / AGP 9.2.1 / Kotlin 2.2.20 / Gradle 9.5.1
@@ -378,7 +396,9 @@ Best-effort. Things that work today:
 
 Things that don't (yet):
 
-- Drive authorization (the "PIN to drive" path)
+- Drive authorization (the "PIN to drive" path) — for now, tap a Tesla keycard or
+  the paired phone itself to the **center-console NFC reader** to authorize driving
+  (see [Driving the car (NFC)](#driving-the-car-nfc))
 - A Gradle wrapper (`gradlew`) — currently you need the gradle binary Studio downloads
 
 If something doesn't work for your car, open an issue with the **Diagnostics** panel

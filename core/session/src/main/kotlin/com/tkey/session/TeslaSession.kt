@@ -130,6 +130,16 @@ class TeslaSession(
         label = "RKE_UNLOCK",
     )
 
+    /**
+     * Wake the car's infotainment domain so it can answer session_info / vehicle_data.
+     * VCSEC stays up while the car sleeps, but infotainment doesn't — without this, our
+     * session_info_request to DOMAIN_INFOTAINMENT silently goes nowhere.
+     */
+    suspend fun wakeVehicle() = sendVcsecSigned(
+        Vcsec.UnsignedMessage.newBuilder().setRKEAction(Vcsec.RKEAction_E.RKE_ACTION_WAKE_VEHICLE).build(),
+        label = "RKE_WAKE",
+    )
+
     suspend fun openFrunk() = sendClosure(label = "FRUNK_OPEN") { setFrontTrunk(Vcsec.ClosureMoveType_E.CLOSURE_MOVE_TYPE_OPEN) }
     suspend fun openTrunk() = sendClosure(label = "TRUNK_OPEN") { setRearTrunk(Vcsec.ClosureMoveType_E.CLOSURE_MOVE_TYPE_OPEN) }
     suspend fun closeTrunk() = sendClosure(label = "TRUNK_CLOSE") { setRearTrunk(Vcsec.ClosureMoveType_E.CLOSURE_MOVE_TYPE_CLOSE) }
@@ -453,19 +463,60 @@ class TeslaSession(
     )
 
     /**
-     * Ask the car for its current [Vehicle.VehicleData]. We request the subsets the UI
-     * actually renders: charge (range + charge progress), closures (window/door positions),
-     * climate (cabin temps + seat states), tire pressure (Advanced status panel).
+     * Ask the car for its current [Vehicle.VehicleData]. Issued as several small requests
+     * because asking for everything at once trips
+     * `MESSAGEFAULT_ERROR_RESPONSE_MTU_EXCEEDED` — the encrypted VehicleData response
+     * doesn't fit a single BLE-MTU-bounded frame. Closures intentionally omitted; VCSEC
+     * auto-broadcasts those via VehicleStatus.
+     *
+     * Each response is merged into [_vehicleData] in [handleInfotainmentResponse] so the
+     * UI sees fields populate as they arrive.
      */
-    suspend fun requestVehicleData() = sendInfotainmentAction(
-        label = "GET_VEHICLE_DATA",
+    suspend fun requestVehicleData() {
+        requestChargeState()
+        requestClimateState()
+        requestTirePressureState()
+        requestMediaState()
+    }
+
+    suspend fun requestChargeState() = sendInfotainmentAction(
+        label = "GET_CHARGE_STATE",
         build = {
             setGetVehicleData(
                 CarServer.GetVehicleData.newBuilder()
                     .setGetChargeState(CarServer.GetChargeState.getDefaultInstance())
-                    .setGetClosuresState(CarServer.GetClosuresState.getDefaultInstance())
+            )
+        },
+        encryptResponse = true,
+    )
+
+    suspend fun requestClimateState() = sendInfotainmentAction(
+        label = "GET_CLIMATE_STATE",
+        build = {
+            setGetVehicleData(
+                CarServer.GetVehicleData.newBuilder()
                     .setGetClimateState(CarServer.GetClimateState.getDefaultInstance())
+            )
+        },
+        encryptResponse = true,
+    )
+
+    suspend fun requestTirePressureState() = sendInfotainmentAction(
+        label = "GET_TIRE_STATE",
+        build = {
+            setGetVehicleData(
+                CarServer.GetVehicleData.newBuilder()
                     .setGetTirePressureState(CarServer.GetTirePressureState.getDefaultInstance())
+            )
+        },
+        encryptResponse = true,
+    )
+
+    suspend fun requestMediaState() = sendInfotainmentAction(
+        label = "GET_MEDIA_STATE",
+        build = {
+            setGetVehicleData(
+                CarServer.GetVehicleData.newBuilder()
                     .setGetMediaState(CarServer.GetMediaState.getDefaultInstance())
             )
         },
@@ -612,7 +663,7 @@ class TeslaSession(
     }
 
     /**
-     * Ask VCSEC to whitelist this device's public key. Tesla's protocol says the
+     * Ask VCSEC to whitelist this device's BLE identity. Tesla's protocol says the
      * vehicle will respond with `OPERATIONSTATUS_WAIT` until the user taps a
      * registered NFC keycard on the center-console reader, then `OPERATIONSTATUS_OK`.
      *
@@ -620,17 +671,48 @@ class TeslaSession(
      * Calling this method only enqueues the request; the UI must guide the tap.
      */
     suspend fun requestEnrollment(role: Keys.Role = Keys.Role.ROLE_OWNER) {
+        sendWhitelistAdd(
+            publicKey = identity.publicKeyBytes(),
+            formFactor = Vcsec.KeyFormFactor.KEY_FORM_FACTOR_ANDROID_DEVICE,
+            role = role,
+        )
+    }
+
+    /**
+     * Whitelist a separate public key as an NFC keycard — used by the HCE
+     * "phone-as-keycard" feature. The car will respond `OPERATIONSTATUS_WAIT` and
+     * expect a physical NFC tap on the center console; satisfying it requires the
+     * caller to have the HCE service armed and the phone held to the console.
+     *
+     * The current BLE session (signed by [identity]) authorizes the request — same
+     * VCSEC path as [requestEnrollment], only the key bytes and form-factor differ.
+     */
+    suspend fun requestKeycardEnrollment(
+        keycardPublicKey: ByteArray,
+        role: Keys.Role = Keys.Role.ROLE_DRIVER,
+    ) {
+        sendWhitelistAdd(
+            publicKey = keycardPublicKey,
+            formFactor = Vcsec.KeyFormFactor.KEY_FORM_FACTOR_NFC_CARD,
+            role = role,
+        )
+    }
+
+    private suspend fun sendWhitelistAdd(
+        publicKey: ByteArray,
+        formFactor: Vcsec.KeyFormFactor,
+        role: Keys.Role,
+    ) {
         _enrollment.value = Enrollment.Requested
-        val pkRaw = identity.publicKeyBytes()
         val whitelistOp = Vcsec.WhitelistOperation.newBuilder()
             .setAddKeyToWhitelistAndAddPermissions(
                 Vcsec.PermissionChange.newBuilder()
-                    .setKey(Vcsec.PublicKey.newBuilder().setPublicKeyRaw(ByteString.copyFrom(pkRaw)))
+                    .setKey(Vcsec.PublicKey.newBuilder().setPublicKeyRaw(ByteString.copyFrom(publicKey)))
                     .setKeyRole(role)
             )
             .setMetadataForKey(
                 Vcsec.KeyMetadata.newBuilder()
-                    .setKeyFormFactor(Vcsec.KeyFormFactor.KEY_FORM_FACTOR_ANDROID_DEVICE)
+                    .setKeyFormFactor(formFactor)
             )
             .build()
         val unsigned = Vcsec.UnsignedMessage.newBuilder()
@@ -648,7 +730,7 @@ class TeslaSession(
             .setUuid(ByteString.copyFrom(randomBytes(16)))
             .build()
         val bytes = msg.toByteArray()
-        Log.i(TAG, "TX whitelist-add role=$role bytes=${bytes.size}")
+        Log.i(TAG, "TX whitelist-add role=$role form=$formFactor bytes=${bytes.size}")
         connection.send(bytes)
     }
 
@@ -727,6 +809,18 @@ class TeslaSession(
             return
         }
         if (msg.payloadCase != UniversalMessage.RoutableMessage.PayloadCase.SESSION_INFO) {
+            // No payload (e.g. infotainment rejecting a signed command). Surface the
+            // signedMessageStatus so we can see which fault the car returned, and
+            // discard any pending entry so we don't leak it.
+            if (msg.hasSignedMessageStatus()) {
+                val status = msg.signedMessageStatus
+                val pending = pendingByUuid.remove(msg.requestUuid)
+                val label = pending?.label ?: "?"
+                Log.w(
+                    TAG,
+                    "RX $fromDom no payload — fault=${status.signedMessageFault} op=${status.operationStatus} for $label",
+                )
+            }
             return
         }
         val info = try {
@@ -923,8 +1017,30 @@ class TeslaSession(
         )
 
         if (response.responseMsgCase == CarServer.Response.ResponseMsgCase.VEHICLEDATA) {
-            _vehicleData.value = VehicleDataSnapshot(response.vehicleData, System.currentTimeMillis())
+            mergeVehicleData(response.vehicleData)
         }
+    }
+
+    /**
+     * Each [requestVehicleData] now arrives in pieces (charge / climate / tires / media)
+     * because the whole-vehicle response trips the car's response-MTU limit. Merge each
+     * incoming subset into the cached snapshot rather than overwriting; that way a fresh
+     * ChargeState doesn't blank out climate data the UI is already showing.
+     */
+    private fun mergeVehicleData(incoming: Vehicle.VehicleData) {
+        val prev = _vehicleData.value?.data
+        val merged = if (prev == null) {
+            incoming
+        } else {
+            prev.toBuilder().apply {
+                if (incoming.hasChargeState()) chargeState = incoming.chargeState
+                if (incoming.hasClimateState()) climateState = incoming.climateState
+                if (incoming.hasTirePressureState()) tirePressureState = incoming.tirePressureState
+                if (incoming.hasMediaState()) mediaState = incoming.mediaState
+                if (incoming.hasClosuresState()) closuresState = incoming.closuresState
+            }.build()
+        }
+        _vehicleData.value = VehicleDataSnapshot(merged, System.currentTimeMillis())
     }
 
     private fun randomBytes(n: Int): ByteArray = ByteArray(n).also { rng.nextBytes(it) }

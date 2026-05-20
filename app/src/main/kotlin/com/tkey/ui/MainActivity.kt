@@ -66,6 +66,7 @@ import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.Key
+import androidx.compose.material.icons.filled.Nfc
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Lock
@@ -132,6 +133,7 @@ import com.tesla.generated.universalmessage.UniversalMessage
 import com.tesla.generated.vcsec.Vcsec
 import com.tkey.ble.CarConnection
 import com.tkey.crypto.Identity
+import com.tkey.keycard.KeycardIdentity
 import com.tkey.session.TeslaSession
 import com.tkey.ui.proximity.ProximityConfig
 import com.tkey.ui.proximity.ProximityFsm
@@ -331,8 +333,17 @@ private fun Screen(modifier: Modifier = Modifier) {
                         coScope.launch {
                             runCatching { sess.requestVehicleStatus() }
                                 .onFailure { statusError = it.message }
-                            runCatching { sess.requestVehicleData() }
-                                .onFailure { statusError = it.message }
+                            if (sess.isReady(UniversalMessage.Domain.DOMAIN_INFOTAINMENT)) {
+                                runCatching { sess.requestVehicleData() }
+                                    .onFailure { statusError = it.message }
+                            } else {
+                                // Infotainment hasn't woken up yet — re-kick the handshake
+                                // instead of throwing. The controller's maintenance loop
+                                // will pick up the reply and auto-fire requestVehicleData.
+                                runCatching {
+                                    sess.requestSessionInfo(UniversalMessage.Domain.DOMAIN_INFOTAINMENT)
+                                }.onFailure { statusError = it.message }
+                            }
                         }
                     }
                 },
@@ -381,6 +392,10 @@ private fun Screen(modifier: Modifier = Modifier) {
                         )
 
                         VehicleStatusCard(vehicleStatus, vehicleData)
+
+                        PowerChargingCard(vehicleData)
+
+                        ClimateSummaryCard(vehicleData)
 
                         TechnicalDetails(
                             expanded = showDetails,
@@ -1138,14 +1153,14 @@ private fun ActionGrid(
             ActionTile(
                 modifier = Modifier.weight(1f),
                 icon = Icons.Filled.Power,
-                label = "Port ↑",
+                label = "Charge port ↑",
                 enabled = enabled,
                 onClick = onPortOpen,
             )
             ActionTile(
                 modifier = Modifier.weight(1f),
                 icon = Icons.Filled.Power,
-                label = "Port ↓",
+                label = "Charge port ↓",
                 enabled = enabled,
                 onClick = onPortClose,
             )
@@ -1315,6 +1330,87 @@ private fun VehicleStatusCard(
                         tone = closureTone(closures.tonneau),
                     )
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PowerChargingCard(vehicleData: TeslaSession.VehicleDataSnapshot?) {
+    val cs = vehicleData?.data?.chargeState ?: return
+    if (!cs.hasChargingState()) return
+    val state = cs.chargingState.typeCase
+    val isCharging = state == Vehicle.ChargeState.ChargingState.TypeCase.CHARGING ||
+        state == Vehicle.ChargeState.ChargingState.TypeCase.STARTING
+    val limitMinutes = if (cs.hasMinutesToChargeLimit() && cs.minutesToChargeLimit > 0) {
+        cs.minutesToChargeLimit
+    } else null
+    val fullMinutes = if (cs.hasMinutesToFullCharge() && cs.minutesToFullCharge > 0) {
+        cs.minutesToFullCharge
+    } else null
+
+    SectionLabel("Power & charging")
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
+        color = Graphite,
+        border = androidx.compose.foundation.BorderStroke(1.dp, Hairline),
+    ) {
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            StatusRow("State", chargingStateLabel(cs), tone = chargingTone(cs))
+            if (cs.hasChargerPower() && cs.chargerPower > 0) {
+                val voltage = if (cs.hasChargerVoltage() && cs.chargerVoltage > 0) " · ${cs.chargerVoltage}V" else ""
+                val amps = if (cs.hasChargerActualCurrent() && cs.chargerActualCurrent > 0) " · ${cs.chargerActualCurrent}A" else ""
+                StatusRow("Power", "${cs.chargerPower} kW$voltage$amps", tone = Tone.Good)
+            } else if (cs.hasChargeRateMphFloat() && cs.chargeRateMphFloat > 0f) {
+                StatusRow("Rate", "${"%.1f".format(cs.chargeRateMphFloat)} mph", tone = Tone.Good)
+            }
+            if (isCharging) {
+                limitMinutes?.let { StatusRow("To limit", formatMinutes(it), tone = Tone.Neutral) }
+                fullMinutes?.let { StatusRow("To full", formatMinutes(it), tone = Tone.Neutral) }
+            }
+            if (cs.hasChargeLimitSoc()) {
+                StatusRow("Limit", "${cs.chargeLimitSoc}%", tone = Tone.Neutral)
+            }
+            if (cs.hasChargeEnergyAdded() && cs.chargeEnergyAdded > 0f) {
+                StatusRow("Energy added", "${"%.1f".format(cs.chargeEnergyAdded)} kWh", tone = Tone.Neutral)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ClimateSummaryCard(vehicleData: TeslaSession.VehicleDataSnapshot?) {
+    val climate = vehicleData?.data?.climateState ?: return
+    val hasAny = climate.hasIsClimateOn() ||
+        climate.hasInsideTempCelsius() ||
+        climate.hasOutsideTempCelsius() ||
+        climate.hasDriverTempSetting()
+    if (!hasAny) return
+
+    val on = climate.hasIsClimateOn() && climate.isClimateOn
+    val inside = if (climate.hasInsideTempCelsius()) "%.0f°C".format(climate.insideTempCelsius) else null
+    val outside = if (climate.hasOutsideTempCelsius()) "%.0f°C".format(climate.outsideTempCelsius) else null
+    val setpoint = if (climate.hasDriverTempSetting()) "%.0f°C".format(climate.driverTempSetting) else null
+
+    SectionLabel("Climate")
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
+        color = Graphite,
+        border = androidx.compose.foundation.BorderStroke(1.dp, Hairline),
+    ) {
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            StatusRow(
+                "Climate",
+                if (on) "ON" else "OFF",
+                tone = if (on) Tone.Good else Tone.Neutral,
+            )
+            inside?.let { StatusRow("Cabin", it, tone = Tone.Neutral) }
+            outside?.let { StatusRow("Outside", it, tone = Tone.Neutral) }
+            setpoint?.let { StatusRow("Set", it, tone = Tone.Neutral) }
+            if (climate.hasIsPreconditioning() && climate.isPreconditioning) {
+                StatusRow("Preconditioning", "ON", tone = Tone.Good)
             }
         }
     }
@@ -1780,6 +1876,31 @@ private fun ComfortScreen(
 
         SectionLabel("Climate")
         SubCard {
+            val inside = climate?.takeIf { it.hasInsideTempCelsius() }?.insideTempCelsius
+            val outside = climate?.takeIf { it.hasOutsideTempCelsius() }?.outsideTempCelsius
+            if (inside != null || outside != null) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        SubLabel("CABIN")
+                        Text(
+                            inside?.let { "${"%.1f".format(it)}°C" } ?: "—",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onBackground,
+                        )
+                    }
+                    Column(modifier = Modifier.weight(1f)) {
+                        SubLabel("OUTSIDE")
+                        Text(
+                            outside?.let { "${"%.1f".format(it)}°C" } ?: "—",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = TextSecondary,
+                        )
+                    }
+                }
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                 ActionTile(
                     modifier = Modifier.weight(1f),
@@ -1803,7 +1924,7 @@ private fun ComfortScreen(
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    SubLabel("DRIVER / PASSENGER")
+                    SubLabel("SET · DRIVER / PASSENGER")
                     Text(
                         "${"%.1f".format(driverTempC)}°C  ·  ${"%.1f".format(passengerTempC)}°C",
                         style = MaterialTheme.typography.titleMedium,
@@ -2449,7 +2570,13 @@ private fun ProximitySettingsScreen(
             border = androidx.compose.foundation.BorderStroke(1.dp, Hairline),
         ) {
             Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (enrollment is TeslaSession.Enrollment.AwaitingKeycard) {
+                // Show the keycard prompt as soon as the user presses Enroll. VCSEC's
+                // OPERATIONSTATUS_WAIT (which moves us to AwaitingKeycard) can lag by a
+                // second or two, and a blank UI in the interim hides what the user is
+                // supposed to do (tap a registered card on the center-console reader).
+                if (enrollment is TeslaSession.Enrollment.Requested ||
+                    enrollment is TeslaSession.Enrollment.AwaitingKeycard
+                ) {
                     KeycardPrompt()
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -2484,6 +2611,7 @@ private fun ProximitySettingsScreen(
                 val sub = when {
                     enrollment is TeslaSession.Enrollment.Success -> "Paired"
                     enrollment is TeslaSession.Enrollment.AwaitingKeycard -> "Awaiting keycard tap…"
+                    enrollment is TeslaSession.Enrollment.Requested -> "Sent enroll request — tap keycard on center console"
                     enrollment is TeslaSession.Enrollment.Failed -> "Enrollment failed: ${enrollment.reason}"
                     sessionStatus is TeslaSession.Status.Failed -> "Session failed: ${sessionStatus.reason}"
                     sessionStatus is TeslaSession.Status.Requested -> "Requesting session info…"
@@ -2498,6 +2626,46 @@ private fun ProximitySettingsScreen(
                 pairError?.let {
                     Text(it, style = MaterialTheme.typography.labelSmall, color = Danger)
                 }
+            }
+        }
+
+        SectionLabel("Phone-as-keycard")
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(20.dp),
+            color = Graphite,
+            border = androidx.compose.foundation.BorderStroke(1.dp, Hairline),
+        ) {
+            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "Register this phone as an NFC keycard. Once paired, tap the phone on " +
+                        "the center console to authorize a drive — same gesture as a physical " +
+                        "Tesla keycard. Note: you will need an existing keycard tap to authorize " +
+                        "adding the phone over Bluetooth and NFC.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextSecondary,
+                )
+                SecondaryButton(
+                    modifier = Modifier.fillMaxWidth(),
+                    text = "Pair phone as keycard",
+                    icon = Icons.Filled.Nfc,
+                    enabled = connReady && session != null,
+                    onClick = {
+                        val sess = session ?: return@SecondaryButton
+                        coScope.launch {
+                            runCatching {
+                                val keycardPub = KeycardIdentity.load().publicKeyBytes()
+                                sess.requestKeycardEnrollment(keycardPub)
+                            }.onFailure { pairError = it.message }
+                        }
+                    },
+                )
+                Text(
+                    "After pairing: wake your phone and hold it flat against the keycard slot " +
+                        "behind the cupholders to drive.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = TextMuted,
+                )
             }
         }
 
@@ -2752,6 +2920,7 @@ private fun serviceStateLabel(s: ProximityRegistry.ServiceState): String = when 
     ProximityRegistry.ServiceState.Scanning -> "scanning"
     ProximityRegistry.ServiceState.Commanding -> "commanding"
     ProximityRegistry.ServiceState.Idle -> "idle"
+    ProximityRegistry.ServiceState.WaitingForBluetooth -> "waiting for bluetooth"
 }
 
 // endregion

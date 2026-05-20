@@ -2,7 +2,9 @@ package com.tkey.ui
 
 import android.content.Context
 import android.util.Log
+import com.tesla.generated.signatures.Signatures
 import com.tesla.generated.universalmessage.UniversalMessage
+import com.tesla.generated.vcsec.Vcsec
 import com.tkey.ble.CarConnection
 import com.tkey.ble.CarScanner
 import com.tkey.crypto.Identity
@@ -57,6 +59,7 @@ class CarController(
 
     private val scope = MainScope()
     private var loopJob: Job? = null
+    private var infotainmentJob: Job? = null
 
     /**
      * @param pairedProvider returns true if this car has completed first-time
@@ -160,8 +163,51 @@ class CarController(
 
         runCatching { s.requestVehicleStatus() }
             .onFailure { Log.w(TAG, "auto GET_STATUS failed: ${it.message}") }
-        runCatching { s.requestSessionInfo(UniversalMessage.Domain.DOMAIN_INFOTAINMENT) }
-            .onFailure { Log.w(TAG, "auto Infotainment session_info failed: ${it.message}") }
+
+        // Infotainment lives in a separate process that's offline while the car sleeps.
+        // A single session_info_request would be dropped silently; instead, run a
+        // maintenance loop that keeps retrying (and sends one wake if VCSEC reports
+        // the car asleep) until DOMAIN_INFOTAINMENT replies or the link drops.
+        infotainmentJob?.cancel()
+        infotainmentJob = scope.launch { ensureInfotainmentSession(s, conn) }
+    }
+
+    private suspend fun ensureInfotainmentSession(s: TeslaSession, conn: CarConnection) {
+        var attempt = 0
+        var wakeFired = false
+        while (currentCoroutineContext().isActive) {
+            if (conn.state.value !is CarConnection.State.Ready) return
+            if (s.isReady(UniversalMessage.Domain.DOMAIN_INFOTAINMENT)) return
+            // If infotainment already answered but with a non-OK status (e.g., this key
+            // isn't whitelisted for it), retrying won't change anything — bail out.
+            val st = s.status.value
+            if (st is TeslaSession.Status.Established &&
+                st.domain == UniversalMessage.Domain.DOMAIN_INFOTAINMENT &&
+                st.statusEnum != Signatures.Session_Info_Status.SESSION_INFO_STATUS_OK
+            ) {
+                Log.i(TAG, "infotainment session_info returned ${st.statusEnum} — not retrying")
+                return
+            }
+            val asleep = s.vehicleStatus.value?.status?.vehicleSleepStatus ==
+                Vcsec.VehicleSleepStatus_E.VEHICLE_SLEEP_STATUS_ASLEEP
+            if (asleep && !wakeFired) {
+                runCatching { s.wakeVehicle() }
+                    .onFailure { Log.w(TAG, "wake-vehicle failed: ${it.message}") }
+                wakeFired = true
+                delay(2_000L)
+                continue
+            }
+            attempt++
+            runCatching { s.requestSessionInfo(UniversalMessage.Domain.DOMAIN_INFOTAINMENT) }
+                .onFailure { Log.w(TAG, "infotainment session_info retry $attempt: ${it.message}") }
+            val delayMs = when {
+                attempt <= 2 -> 3_000L
+                attempt <= 4 -> 6_000L
+                attempt <= 7 -> 12_000L
+                else -> 30_000L
+            }
+            delay(delayMs)
+        }
     }
 
     private suspend fun awaitDisconnect() {
@@ -170,6 +216,8 @@ class CarController(
     }
 
     private fun cleanupSession() {
+        infotainmentJob?.cancel()
+        infotainmentJob = null
         _session.value?.stop()
         _session.value = null
         _connection.value?.disconnect()

@@ -19,7 +19,7 @@ import kotlinx.coroutines.flow.update
  */
 object ProximityRegistry {
 
-    enum class ServiceState { Stopped, Scanning, Commanding, Idle }
+    enum class ServiceState { Stopped, Scanning, Commanding, Idle, WaitingForBluetooth }
 
     /**
      * Latest per-VIN snapshot of the FSM. [lastAction] / [lastActionMs] are sticky so the

@@ -54,6 +54,21 @@ class Session(val key: ByteArray) {
     }
 
     /**
+     * AES-128-ECB encrypt of a single 16-byte block under [key]. Used by the Tesla
+     * keycard's INS 0x11 challenge/response — the card returns
+     * `AES-ECB-Encrypt(K, challenge)` where K is the same `SHA1(X)[:16]` reduction this
+     * [Session] already derives. Do not use for anything else — ECB has no place in
+     * the BLE protocol; it lives here only because the keycard reuses the K derivation.
+     */
+    fun encryptBlock(block: ByteArray): ByteArray {
+        require(block.size == KEY_SIZE) { "AES block must be $KEY_SIZE bytes" }
+        val cipher = Cipher.getInstance("AES/ECB/NoPadding").apply {
+            init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"))
+        }
+        return cipher.doFinal(block)
+    }
+
+    /**
      * Returns a fresh HMAC-SHA256 [Mac] keyed with `subkey = HMAC-SHA256(K, label_utf8)`.
      * The caller updates with the bytes to authenticate and reads `doFinal()` as the tag.
      */

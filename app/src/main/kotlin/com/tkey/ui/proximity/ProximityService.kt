@@ -4,7 +4,12 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothManager
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.app.Service
 import android.hardware.Sensor
@@ -73,9 +78,13 @@ class ProximityService : Service() {
     private val lastBeaconAtMs = AtomicLong(0L)
     private val lastMotionAtMs = AtomicLong(System.currentTimeMillis())
 
+    @Volatile private var btEnabled = true
+    private var btReceiver: BroadcastReceiver? = null
+
     override fun onCreate() {
         super.onCreate()
         createChannel()
+        registerBluetoothStateReceiver()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -92,8 +101,48 @@ class ProximityService : Service() {
 
     override fun onDestroy() {
         scope.cancel()
+        btReceiver?.let { runCatching { unregisterReceiver(it) } }
+        btReceiver = null
         ProximityRegistry.clearOnStop()
         super.onDestroy()
+    }
+
+    private fun registerBluetoothStateReceiver() {
+        btEnabled = getSystemService(BluetoothManager::class.java)?.adapter?.isEnabled == true
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(c: Context, intent: Intent) {
+                if (intent.action != BluetoothAdapter.ACTION_STATE_CHANGED) return
+                val state = intent.getIntExtra(
+                    BluetoothAdapter.EXTRA_STATE,
+                    BluetoothAdapter.STATE_OFF,
+                )
+                when (state) {
+                    BluetoothAdapter.STATE_OFF, BluetoothAdapter.STATE_TURNING_OFF -> {
+                        if (btEnabled) {
+                            btEnabled = false
+                            Log.i(TAG, "Bluetooth disabled; pausing scanner")
+                            scope.launch { pauseForBluetooth() }
+                        }
+                    }
+                    BluetoothAdapter.STATE_ON -> {
+                        if (!btEnabled) {
+                            btEnabled = true
+                            Log.i(TAG, "Bluetooth re-enabled; resuming scanner")
+                            // Reset the motion timer so the idle watcher gives the FSM a
+                            // chance to see beacons before declaring idle.
+                            lastMotionAtMs.set(System.currentTimeMillis())
+                            ensureLoopsRunning()
+                        }
+                    }
+                }
+            }
+        }
+        registerReceiver(
+            receiver,
+            IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED),
+            Context.RECEIVER_EXPORTED,
+        )
+        btReceiver = receiver
     }
 
     private fun reload() {
@@ -128,9 +177,14 @@ class ProximityService : Service() {
     }
 
     private fun ensureLoopsRunning() {
-        if (scannerJob == null && !inCommand) {
-            scannerJob = scope.launch { scannerLoop() }
-            ProximityRegistry.setServiceState(ProximityRegistry.ServiceState.Scanning)
+        if (btEnabled) {
+            if (scannerJob == null && !inCommand) {
+                scannerJob = scope.launch { scannerLoop() }
+                ProximityRegistry.setServiceState(ProximityRegistry.ServiceState.Scanning)
+            }
+        } else {
+            ProximityRegistry.setServiceState(ProximityRegistry.ServiceState.WaitingForBluetooth)
+            updateNotification("Waiting for Bluetooth")
         }
         if (tickerJob == null) {
             tickerJob = scope.launch { tickerLoop() }
@@ -170,6 +224,10 @@ class ProximityService : Service() {
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
+                if (!btEnabled) {
+                    Log.i(TAG, "scanner exiting: bluetooth off")
+                    return
+                }
                 Log.w(TAG, "scanner error: ${e.message}; restarting in 3s")
                 delay(3_000)
             }
@@ -216,10 +274,13 @@ class ProximityService : Service() {
                 Log.w(TAG, "$action $vin failed: ${e.message}")
             }
             inCommand = false
-            if (fsms.isNotEmpty() && scannerJob == null) {
+            if (fsms.isNotEmpty() && scannerJob == null && btEnabled) {
                 scannerJob = scope.launch { scannerLoop() }
                 ProximityRegistry.setServiceState(ProximityRegistry.ServiceState.Scanning)
                 updateNotification("Watching for vehicles")
+            } else if (!btEnabled) {
+                ProximityRegistry.setServiceState(ProximityRegistry.ServiceState.WaitingForBluetooth)
+                updateNotification("Waiting for Bluetooth")
             }
         }
     }
@@ -270,7 +331,7 @@ class ProximityService : Service() {
     private suspend fun idleWatcherLoop() {
         while (currentCoroutineContext().isActive) {
             delay(60_000)
-            if (inCommand || fsms.isEmpty()) continue
+            if (inCommand || fsms.isEmpty() || !btEnabled) continue
             val now = System.currentTimeMillis()
             val beaconAge = now - lastBeaconAtMs.get()
             val motionAge = now - lastMotionAtMs.get()
@@ -280,6 +341,15 @@ class ProximityService : Service() {
                 pauseForMotion()
             }
         }
+    }
+
+    private suspend fun pauseForBluetooth() {
+        scannerJob?.let { prev ->
+            scannerJob = null
+            runCatching { prev.cancelAndJoin() }
+        }
+        ProximityRegistry.setServiceState(ProximityRegistry.ServiceState.WaitingForBluetooth)
+        updateNotification("Waiting for Bluetooth")
     }
 
     private suspend fun pauseForMotion() {
@@ -293,7 +363,7 @@ class ProximityService : Service() {
             awaitSignificantMotion()
             lastMotionAtMs.set(System.currentTimeMillis())
         } finally {
-            if (fsms.isNotEmpty() && scannerJob == null) {
+            if (fsms.isNotEmpty() && scannerJob == null && btEnabled) {
                 scannerJob = scope.launch { scannerLoop() }
                 ProximityRegistry.setServiceState(ProximityRegistry.ServiceState.Scanning)
                 updateNotification("Watching for vehicles")

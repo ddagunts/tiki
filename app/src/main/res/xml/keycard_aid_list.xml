@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Tesla NFC keycard emulation. AID is ASCII "teslaLogic" — the application identifier
+  modern Tesla vehicles SELECT against (74 65 73 6C 61 4C 6F 67 69 63, 10 bytes).
+
+  - category="other": this is not a payment AID; CATEGORY_OTHER avoids conflicting
+    with default-payment defaults.
+  - requireDeviceUnlock="false" and requireDeviceScreenOn="false" so the phone behaves
+    like a physical keycard — tap to unlock/start without unlocking the phone first.
+    The car still has its own auth (PIN-to-Drive) for higher-assurance situations.
+-->
+<host-apdu-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:description="@string/keycard_service_description"
+    android:requireDeviceUnlock="false"
+    android:requireDeviceScreenOn="false">
+    <aid-group android:description="@string/keycard_aid_group_description"
+        android:category="other">
+        <aid-filter android:name="7465736C614C6F676963" />
+    </aid-group>
+</host-apdu-service>
