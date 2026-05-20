@@ -1,0 +1,4 @@
+Auto-refresh while you're in the car + small status-card polish.
+
+- Auto-refresh: while a user is in the car, vehicle status and data refresh every minute so the hero card and panels don't go stale during a drive. Loop stops as soon as user presence clears.
+- Hero card: the "Updated <time>" / "Ns ago" line no longer rolls over onto one cramped row — the relative age sits on its own line below the timestamp.

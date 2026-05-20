@@ -291,6 +291,24 @@ private fun Screen(modifier: Modifier = Modifier) {
         startWithPermissions(car.vin)
     }
 
+    // Auto-refresh while a user is in the car: poll vehicle status + data every 60s so the
+    // hero card and status panels don't go stale during a drive. Loop only runs when the
+    // last status snapshot reported presence; presence flipping away tears the loop down,
+    // presence flipping back in starts a new one.
+    val userPresent = vehicleStatus?.status?.userPresence ==
+        Vcsec.UserPresence_E.VEHICLE_USER_PRESENCE_PRESENT
+    LaunchedEffect(session, userPresent) {
+        val sess = session ?: return@LaunchedEffect
+        if (!userPresent) return@LaunchedEffect
+        while (true) {
+            delay(60_000)
+            runCatching { sess.requestVehicleStatus() }
+            if (sess.isReady(UniversalMessage.Domain.DOMAIN_INFOTAINMENT)) {
+                runCatching { sess.requestVehicleData() }
+            }
+        }
+    }
+
     Column(
         modifier = modifier
             .verticalScroll(rememberScrollState())
