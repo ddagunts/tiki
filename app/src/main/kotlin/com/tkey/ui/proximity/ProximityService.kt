@@ -145,12 +145,13 @@ class ProximityService : Service() {
                 }
             }
         }
-        // ACTION_STATE_CHANGED is a protected broadcast — only the system can send it,
-        // so we don't need (and shouldn't advertise) that this receiver accepts external broadcasts.
+        // RECEIVER_EXPORTED is required: ACTION_STATE_CHANGED is dispatched from the
+        // com.android.bluetooth process (not system_server on most devices), so
+        // NOT_EXPORTED can silently drop it. Matches the CarScanner receiver flag.
         registerReceiver(
             receiver,
             IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED),
-            Context.RECEIVER_NOT_EXPORTED,
+            Context.RECEIVER_EXPORTED,
         )
         btReceiver = receiver
     }

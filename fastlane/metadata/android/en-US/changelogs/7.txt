@@ -1,0 +1,5 @@
+Hotfix for 0.4.0: BLE scanning broken.
+
+- Bluetooth scan in 0.4.0 ran forever without ever finding the car. The receiver hardening flag added in 0.4.0 (RECEIVER_NOT_EXPORTED) silently dropped the system broadcasts that signal "device found" / "discovery finished" / "Bluetooth state changed", because those come from the com.android.bluetooth process rather than system_server. Reverted to RECEIVER_EXPORTED on the two affected receivers.
+
+If you installed 0.4.0, please update to this build before next use.

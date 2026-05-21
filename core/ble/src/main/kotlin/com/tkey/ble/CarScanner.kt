@@ -76,8 +76,11 @@ class CarScanner(private val ctx: Context) {
             addAction(BluetoothDevice.ACTION_FOUND)
             addAction(BluetoothAdapter.ACTION_DISCOVERY_FINISHED)
         }
-        // ACTION_FOUND / ACTION_DISCOVERY_FINISHED are protected broadcasts (system-only).
-        ctx.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        // RECEIVER_EXPORTED is required here: ACTION_FOUND and ACTION_DISCOVERY_FINISHED are
+        // sent from the com.android.bluetooth process, not system_server, and NOT_EXPORTED
+        // blocks them — leaving the scan loop running forever with no callbacks. Reverted
+        // from a 0.4.0 hardening attempt that didn't account for the BT process UID.
+        ctx.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED)
 
         val loop = launch {
             while (isActive) {
