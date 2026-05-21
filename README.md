@@ -139,9 +139,10 @@ enabled. Nothing runs when the feature is off.
 
 - **Auto-lock isn't instant.** Lock fires once your phone's smoothed RSSI sits below
   the **Lock RSSI** threshold for the **depart dwell** window — not the moment you
-  step out. The dwell timer (default ~5 s) is there to keep a brief signal dip from
-  flapping the lock state; you can tune it from the Settings screen if you want it
-  snappier or more conservative.
+  step out. The default depart dwell is **30 s** (the approach dwell defaults to 1.5 s);
+  both are tunable from the Settings screen, with the depart dwell deliberately long
+  so a brief signal dip while you're standing next to the car doesn't flap the lock
+  state.
 - **Range is BLE range.** Roughly the inside of your driveway / garage. Don't expect
   walk-up unlock from across the street.
 - **Proximity is per-car.** Enable it on the cars you actually use; the others stay in
@@ -167,13 +168,16 @@ The full manifest ([`AndroidManifest.xml`](app/src/main/AndroidManifest.xml)) is
 <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
 <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
 <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+<uses-permission android:name="android.permission.NFC" />
 ```
 
 The two Bluetooth entries are grouped under the user-facing "Nearby devices" toggle in
 Android Settings. The three foreground-service entries are only exercised when Proximity
 unlock is enabled for at least one car — the service stops itself the moment no car has
-the feature on. Notably absent: **no** `INTERNET`, **no** location of any kind, **no**
-phone state, **no** contacts, **no** storage, **no** wake lock, **no** boot-completed.
+the feature on. `NFC` is a normal (install-time) permission with no runtime prompt;
+it's needed for Host Card Emulation when you opt into phone-as-keycard. Notably absent:
+**no** `INTERNET`, **no** location of any kind, **no** phone state, **no** contacts,
+**no** storage, **no** wake lock, **no** boot-completed.
 
 Because there is no `INTERNET` permission, the app cannot open a socket, fetch a URL,
 ping a server, or post telemetry. This is enforced by Android itself, not by app code —
@@ -186,9 +190,11 @@ The dependency tree (see [`gradle/libs.versions.toml`](gradle/libs.versions.toml
 - AndroidX lifecycle + activity
 - `kotlinx.coroutines`
 - Google's `protobuf-kotlin-lite` (for the public Tesla `.proto` schemas)
-- Google's `tink-android` (cryptographic primitives only — no network)
 
-That's the entire third-party surface.
+All cryptography (P-256 ECDH, AES-128-GCM, AES-128-ECB for the keycard, HMAC-SHA256) is
+done through the standard JDK `java.security` / `javax.crypto` APIs backed by Android's
+hardware-backed keystore — no third-party crypto libraries. That's the entire third-party
+surface.
 
 ### Private key in the secure element
 
@@ -196,11 +202,13 @@ The pairing keypair is a NIST P-256 ECDH/ECDSA key, generated on first launch vi
 [`KeyPairGenerator` with the `AndroidKeyStore` provider](core/crypto/src/main/kotlin/com/tkey/crypto/Identity.kt).
 It is generated *inside* the device's secure element and is never exported.
 
-On devices with a **StrongBox** secure element (Pixel 3+ and most modern flagships) the
-key lives on a dedicated tamper-resistant chip. On devices without StrongBox but with a
-Trusted Execution Environment (the vast majority of phones since ~2017), the key lives
-inside the TEE. On older devices that have neither, the key is software-backed but still
-sandboxed by the OS.
+On devices with a **StrongBox** secure element (Pixel 3+ and most modern flagships) TKey
+asks for the key to be StrongBox-backed and the key lives on a dedicated tamper-resistant
+chip. If StrongBox isn't available the keystore falls back to the Trusted Execution
+Environment (the vast majority of phones since ~2017). On older devices that have
+neither, the key is software-backed but still sandboxed by the OS. Once a key is
+generated its backing tier is fixed — installs that predate StrongBox preference keep
+their TEE-backed key so that already-paired cars don't have to re-enroll.
 
 The app displays which security level you have inside its **Diagnostics** panel.
 
@@ -241,8 +249,9 @@ TKey is meant to be cheap to leave running:
   10 minutes of no beacons + no motion (see
   [Proximity unlock § Auto-pause](#auto-pause)).
 - **BLE only.** No periodic Wi-Fi connection, no cellular request, no Play Services
-  heartbeat. Once connected, it sends 1 PING-ish frame per heartbeat interval and
-  otherwise idles.
+  heartbeat. There's no app-level ping either: once connected the BLE link's own
+  GATT keep-alive holds the connection, and TKey only puts bytes on the wire when
+  you press a button (or when the proximity service is firing an RKE command).
 - **Auto-reconnect uses exponential backoff** (1s → 2s → 5s → 15s → 30s) so a car that's
   driven away doesn't cause the radio to hammer.
 - **No location.** The `BLUETOOTH_SCAN` permission is declared with

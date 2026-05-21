@@ -20,7 +20,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.security.SecureRandom
+import java.util.concurrent.ConcurrentHashMap
 
 private const val TAG = "TKey.Sess"
 
@@ -53,6 +56,15 @@ class TeslaSession(
     )
 
     private val domainStates = mutableMapOf<UniversalMessage.Domain, DomainState>()
+
+    /**
+     * Serializes the counter-increment + wire-send pair so two concurrent command
+     * coroutines (e.g. two UI taps in quick succession) can't both read the same
+     * counter, both increment, and emit duplicate counters — VCSEC would reject one
+     * as a replay. [CarConnection.send] already serializes bytes on the wire, but
+     * this mutex is needed *before* the counter read.
+     */
+    private val sendMutex = Mutex()
 
     sealed class Status {
         data object Idle : Status()
@@ -99,7 +111,8 @@ class TeslaSession(
      * the AAD for the response decryption.
      */
     private data class PendingRequest(val tag: ByteArray, val label: String, val sentAtMs: Long)
-    private val pendingByUuid = mutableMapOf<ByteString, PendingRequest>()
+    // Concurrent: written by send coroutines, removed by handleIncoming on the internal scope.
+    private val pendingByUuid = ConcurrentHashMap<ByteString, PendingRequest>()
 
     /** Number of inbound RoutableMessages parsed since [start]. Exposed for the UI. */
     private val _rxCount = MutableStateFlow(0)
@@ -539,7 +552,7 @@ class TeslaSession(
         plaintext: ByteArray,
         label: String,
         encryptResponse: Boolean,
-    ) {
+    ) = sendMutex.withLock {
         val state = domainStates[UniversalMessage.Domain.DOMAIN_INFOTAINMENT]
             ?: error("Infotainment session not yet established — call requestSessionInfo(DOMAIN_INFOTAINMENT) first")
 
@@ -601,7 +614,7 @@ class TeslaSession(
         connection.send(bytes)
     }
 
-    private suspend fun sendVcsecSigned(unsigned: Vcsec.UnsignedMessage, label: String) {
+    private suspend fun sendVcsecSigned(unsigned: Vcsec.UnsignedMessage, label: String) = sendMutex.withLock {
         val state = domainStates[UniversalMessage.Domain.DOMAIN_VEHICLE_SECURITY]
             ?: error("VCSEC session not yet established — call requestSessionInfo first")
 

@@ -1,0 +1,9 @@
+Stability and security hardening from a full code review.
+
+- Fix a counter race that could cause rapid back-to-back commands to be silently rejected by the car. Both VCSEC and Infotainment sends are now serialized end-to-end.
+- BLE write failures are surfaced as errors instead of silently corrupting the outgoing frame.
+- New keypairs on devices with StrongBox are now backed by the dedicated tamper-resistant chip; existing pairings are unaffected.
+- Public-key bytes from the vehicle are validated against the P-256 curve before any ECDH or AES step touches them.
+- Proximity unlock now repairs out-of-range or inverted thresholds on load instead of refusing to start.
+- Auto-resume now remembers the active car when you start it from the Settings screen, not only from the vehicle list.
+- BLE state and disconnect signaling cleaned up so a reconnect that fails mid-handshake no longer leaves the UI stuck.

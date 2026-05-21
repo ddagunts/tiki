@@ -14,6 +14,16 @@ data class ProximityConfig(
     val enterDwellMs: Long = DEFAULT_ENTER_DWELL_MS,
     val exitDwellMs: Long = DEFAULT_EXIT_DWELL_MS,
 ) {
+    init {
+        require(unlockRssi in MIN_RSSI..MAX_RSSI) { "unlockRssi out of range: $unlockRssi" }
+        require(lockRssi in MIN_RSSI..MAX_RSSI) { "lockRssi out of range: $lockRssi" }
+        require(unlockRssi - lockRssi >= MIN_HYSTERESIS_DB) {
+            "lockRssi ($lockRssi) must be at least $MIN_HYSTERESIS_DB dBm weaker than unlockRssi ($unlockRssi)"
+        }
+        require(enterDwellMs in 100L..60_000L) { "enterDwellMs out of range: $enterDwellMs" }
+        require(exitDwellMs in 1_000L..600_000L) { "exitDwellMs out of range: $exitDwellMs" }
+    }
+
     fun toJson(): JSONObject = JSONObject()
         .put("enabled", enabled)
         .put("unlockRssi", unlockRssi)
@@ -31,12 +41,25 @@ data class ProximityConfig(
         const val MAX_RSSI = -30
         const val MIN_HYSTERESIS_DB = 5
 
-        fun fromJson(obj: JSONObject): ProximityConfig = ProximityConfig(
-            enabled = obj.optBoolean("enabled", false),
-            unlockRssi = obj.optInt("unlockRssi", DEFAULT_UNLOCK_RSSI),
-            lockRssi = obj.optInt("lockRssi", DEFAULT_LOCK_RSSI),
-            enterDwellMs = obj.optLong("enterDwellMs", DEFAULT_ENTER_DWELL_MS),
-            exitDwellMs = obj.optLong("exitDwellMs", DEFAULT_EXIT_DWELL_MS),
-        )
+        /**
+         * Tolerant parser: clamp every field into the supported range and repair an inverted
+         * threshold pair rather than throwing. Used for SharedPreferences round-trips where
+         * stale or hand-edited values shouldn't crash the app on launch.
+         */
+        fun fromJson(obj: JSONObject): ProximityConfig {
+            val unlock = obj.optInt("unlockRssi", DEFAULT_UNLOCK_RSSI)
+                .coerceIn(MIN_RSSI + MIN_HYSTERESIS_DB, MAX_RSSI)
+            val lock = obj.optInt("lockRssi", DEFAULT_LOCK_RSSI)
+                .coerceIn(MIN_RSSI, unlock - MIN_HYSTERESIS_DB)
+            return ProximityConfig(
+                enabled = obj.optBoolean("enabled", false),
+                unlockRssi = unlock,
+                lockRssi = lock,
+                enterDwellMs = obj.optLong("enterDwellMs", DEFAULT_ENTER_DWELL_MS)
+                    .coerceIn(100L, 60_000L),
+                exitDwellMs = obj.optLong("exitDwellMs", DEFAULT_EXIT_DWELL_MS)
+                    .coerceIn(1_000L, 600_000L),
+            )
+        }
     }
 }

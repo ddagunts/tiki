@@ -6,6 +6,7 @@ import java.security.KeyFactory
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.security.interfaces.ECPublicKey
+import java.security.spec.ECFieldFp
 import java.security.spec.ECGenParameterSpec
 import java.security.spec.ECParameterSpec
 import java.security.spec.ECPoint
@@ -107,17 +108,44 @@ class Session(val key: ByteArray) {
             return Session(sha1.copyOfRange(0, KEY_SIZE))
         }
 
-        /** Parse a SEC1 uncompressed P-256 public key: `0x04 || X(32) || Y(32)` = 65 bytes. */
+        /**
+         * Parse a SEC1 uncompressed P-256 public key: `0x04 || X(32) || Y(32)` = 65 bytes.
+         *
+         * Validates that the point actually lies on the curve before returning. The
+         * AndroidKeyStore ECDH provider would reject an off-curve point at `doPhase()`
+         * time, but the keycard path ([Keycard.respondToChallenge]) consumes vehicle-
+         * supplied bytes and we'd rather fail at parse than risk an invalid-curve
+         * attack against any future provider that's less careful.
+         */
         fun decodePublicKey(uncompressed: ByteArray): ECPublicKey {
             require(uncompressed.size == 65 && uncompressed[0] == 0x04.toByte()) {
                 "expected uncompressed P-256 (65 bytes, leading 0x04); got ${uncompressed.size} bytes"
             }
             val x = BigInteger(1, uncompressed.copyOfRange(1, 33))
             val y = BigInteger(1, uncompressed.copyOfRange(33, 65))
+            requireOnP256(x, y)
             return KeyFactory.getInstance("EC").generatePublic(
                 ECPublicKeySpec(ECPoint(x, y), P256_PARAMS)
             ) as ECPublicKey
         }
+
+        /**
+         * Reject points that aren't on the P-256 curve. Both coordinates must be in
+         * `[0, p)` and satisfy `y² ≡ x³ + a·x + b (mod p)` (for P-256, `a = p − 3`).
+         */
+        private fun requireOnP256(x: BigInteger, y: BigInteger) {
+            val curve = P256_PARAMS.curve
+            val p = (curve.field as ECFieldFp).p
+            require(x.signum() >= 0 && x < p && y.signum() >= 0 && y < p) {
+                "P-256 coordinates out of field"
+            }
+            val lhs = y.modPow(BIG_TWO, p)
+            val rhs = x.modPow(BIG_THREE, p).add(curve.a.multiply(x)).add(curve.b).mod(p)
+            require(lhs == rhs) { "P-256 public key point not on curve" }
+        }
+
+        private val BIG_TWO = BigInteger.valueOf(2)
+        private val BIG_THREE = BigInteger.valueOf(3)
 
         private val P256_PARAMS: ECParameterSpec by lazy {
             AlgorithmParameters.getInstance("EC").run {

@@ -2,6 +2,8 @@ package com.tkey.crypto
 
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
+import android.security.keystore.StrongBoxUnavailableException
+import android.util.Log
 import java.math.BigInteger
 import java.security.KeyPairGenerator
 import java.security.KeyStore
@@ -63,19 +65,34 @@ class Identity private constructor(
         fun loadOrCreate(alias: String = DEFAULT_ALIAS): Identity {
             val ks = KeyStore.getInstance(KEYSTORE).also { it.load(null) }
             if (!ks.containsAlias(alias)) {
-                val spec = KeyGenParameterSpec.Builder(
-                    alias,
-                    KeyProperties.PURPOSE_SIGN or KeyProperties.PURPOSE_AGREE_KEY,
-                )
-                    .setAlgorithmParameterSpec(ECGenParameterSpec("secp256r1"))
-                    .setDigests(KeyProperties.DIGEST_SHA256, KeyProperties.DIGEST_NONE)
-                    .setUserAuthenticationRequired(false)
-                    .build()
                 val kpg = KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_EC, KEYSTORE)
-                kpg.initialize(spec)
-                kpg.generateKeyPair()
+                // Prefer StrongBox where available; fall back to TEE otherwise. The exception is
+                // expected on phones without a dedicated tamper-resistant chip, so it's logged at
+                // INFO. Existing aliases (from before this preference was added) are kept as-is —
+                // regenerating would invalidate any cars already paired against the old key.
+                try {
+                    kpg.initialize(buildKeyGenSpec(alias, strongBox = true))
+                    kpg.generateKeyPair()
+                    Log.i("TKey.Identity", "Generated key $alias in StrongBox")
+                } catch (e: StrongBoxUnavailableException) {
+                    Log.i("TKey.Identity", "StrongBox unavailable; falling back to TEE")
+                    kpg.initialize(buildKeyGenSpec(alias, strongBox = false))
+                    kpg.generateKeyPair()
+                }
             }
             return Identity(ks, alias)
+        }
+
+        private fun buildKeyGenSpec(alias: String, strongBox: Boolean): KeyGenParameterSpec {
+            val builder = KeyGenParameterSpec.Builder(
+                alias,
+                KeyProperties.PURPOSE_SIGN or KeyProperties.PURPOSE_AGREE_KEY,
+            )
+                .setAlgorithmParameterSpec(ECGenParameterSpec("secp256r1"))
+                .setDigests(KeyProperties.DIGEST_SHA256, KeyProperties.DIGEST_NONE)
+                .setUserAuthenticationRequired(false)
+            if (strongBox) builder.setIsStrongBoxBacked(true)
+            return builder.build()
         }
 
         private fun BigInteger.toUnsignedFixed(byteLength: Int): ByteArray {

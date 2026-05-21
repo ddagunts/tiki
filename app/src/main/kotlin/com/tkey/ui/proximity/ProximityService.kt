@@ -27,6 +27,7 @@ import com.tkey.crypto.Identity
 import com.tkey.session.TeslaSession
 import com.tkey.ui.CarStore
 import com.tkey.ui.MainActivity
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -64,9 +65,16 @@ private const val TAG = "TKey.Prox"
 class ProximityService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    private val fsms = mutableMapOf<String, ProximityFsm>()
-    private val targets = mutableMapOf<String, String>() // VinHash localName -> VIN
-    private val actionQueue = Channel<Pair<String, ProximityFsm.Action>>(Channel.UNLIMITED)
+    // Concurrent: reload() (onStartCommand thread) mutates while scannerLoop / tickerLoop
+    // (Default dispatcher coroutines) read. Plain HashMap can NPE / loop under structural mods.
+    private val fsms = ConcurrentHashMap<String, ProximityFsm>()
+    private val targets = ConcurrentHashMap<String, String>() // VinHash localName -> VIN
+    // Bounded so a stuck commander can't backlog stale actions; drop the oldest
+    // (lock/unlock decisions are intentionally short-lived and rapidly re-derived).
+    private val actionQueue = Channel<Pair<String, ProximityFsm.Action>>(
+        capacity = 8,
+        onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST,
+    )
     private val identity by lazy { Identity.loadOrCreate() }
 
     private var scannerJob: Job? = null
@@ -137,10 +145,12 @@ class ProximityService : Service() {
                 }
             }
         }
+        // ACTION_STATE_CHANGED is a protected broadcast — only the system can send it,
+        // so we don't need (and shouldn't advertise) that this receiver accepts external broadcasts.
         registerReceiver(
             receiver,
             IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED),
-            Context.RECEIVER_EXPORTED,
+            Context.RECEIVER_NOT_EXPORTED,
         )
         btReceiver = receiver
     }

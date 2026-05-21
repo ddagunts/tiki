@@ -263,6 +263,10 @@ private fun Screen(modifier: Modifier = Modifier) {
 
     fun startWithPermissions(targetVin: String) {
         if (targetVin.length != 17) return
+        // Persist before we attempt anything — Settings-driven auto-start, CarCard tap,
+        // and the auto-resume LaunchedEffect all funnel through here, so this is the one
+        // place that's guaranteed to fire when the user expresses intent for a specific car.
+        carStore.setLastVin(targetVin)
         val needed = arrayOf(
             Manifest.permission.BLUETOOTH_SCAN,
             Manifest.permission.BLUETOOTH_CONNECT,
@@ -462,7 +466,6 @@ private fun Screen(modifier: Modifier = Modifier) {
                                 vin = car.vin
                                 selectedName = car.name
                                 statusError = null
-                                carStore.setLastVin(car.vin)
                                 startWithPermissions(car.vin)
                             },
                             onSettings = { settingsVin = car.vin },

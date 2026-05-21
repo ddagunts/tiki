@@ -23,15 +23,27 @@ class CarStore(context: Context) {
         }.getOrDefault(emptyList())
     }
 
-    /** Adds or updates by VIN. Returns the new list, or null if at capacity and VIN is new. */
+    /**
+     * Adds or updates by VIN. Returns the new list, or null if at capacity and the VIN is new.
+     * Throws [IllegalArgumentException] if the VIN isn't 17 uppercase alphanumerics — the
+     * AddCar UI already filters input to that shape, but enforce it here so programmatic
+     * callers can't slip a bad VIN past us into [VinHash] / `localName` matching.
+     */
     fun add(car: SavedCar): List<SavedCar>? {
+        val normalizedVin = car.vin.uppercase()
+        require(VIN_REGEX.matches(normalizedVin)) {
+            "VIN must be 17 uppercase alphanumeric characters; got '${car.vin}'"
+        }
+        val normalizedName = car.name.trim()
+        require(normalizedName.isNotEmpty()) { "Name must not be empty" }
+        val normalized = SavedCar(name = normalizedName, vin = normalizedVin)
         val current = list().toMutableList()
-        val existing = current.indexOfFirst { it.vin == car.vin }
+        val existing = current.indexOfFirst { it.vin == normalizedVin }
         if (existing >= 0) {
-            current[existing] = car
+            current[existing] = normalized
         } else {
             if (current.size >= MAX_CARS) return null
-            current.add(car)
+            current.add(normalized)
         }
         save(current)
         return current
@@ -110,6 +122,7 @@ class CarStore(context: Context) {
         private const val KEY_LAST_VIN = "last_vin"
         private const val KEY_PAIRED_VINS = "paired_vins"
         private const val KEY_HIDE_BACK_PILL = "hide_back_pill"
+        private val VIN_REGEX = Regex("^[A-Z0-9]{17}$")
 
         private fun proxKey(vin: String) = "prox_$vin"
     }

@@ -76,7 +76,8 @@ class CarScanner(private val ctx: Context) {
             addAction(BluetoothDevice.ACTION_FOUND)
             addAction(BluetoothAdapter.ACTION_DISCOVERY_FINISHED)
         }
-        ctx.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED)
+        // ACTION_FOUND / ACTION_DISCOVERY_FINISHED are protected broadcasts (system-only).
+        ctx.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
 
         val loop = launch {
             while (isActive) {

@@ -85,11 +85,18 @@ class CarConnection(
 
     /** Serializes writes; each write waits for onCharacteristicWrite before the next. */
     private val writeMutex = Mutex()
-    private var writeAck: CompletableDeferred<Int>? = null
+    // @Volatile because the GATT callback (binder thread) reads it after the caller
+    // (MainScope coroutine thread) sets it. Always written inside writeMutex.withLock,
+    // so the only race is callback-vs-caller visibility, which @Volatile resolves.
+    @Volatile private var writeAck: CompletableDeferred<Int>? = null
     private val inboundBuffer = ByteArrayOutputStream()
 
     @SuppressLint("MissingPermission")
     fun connect() {
+        if (gatt != null) {
+            Log.w(TAG, "connect() called while already connected/connecting; ignoring")
+            return
+        }
         Log.i(TAG, "connectGatt to ${device.address}")
         retriesLeft = MAX_RETRIES
         openGatt()
@@ -106,6 +113,10 @@ class CarConnection(
         gatt?.disconnect()
         gatt?.close()
         gatt = null
+        // Force the terminal state ourselves so consumers awaiting state.first { it !is Ready }
+        // don't hang if disconnect() was called mid-handshake or mid-retry, where the GATT
+        // callback may never fire a STATE_DISCONNECTED for us.
+        _state.value = State.Disconnected
         scope.cancel()
     }
 
@@ -134,7 +145,10 @@ class CarConnection(
                 val ack = CompletableDeferred<Int>()
                 writeAck = ack
                 writeChunk(g, tx, chunk)
-                ack.await() // blocks until onCharacteristicWrite
+                val status = ack.await() // blocks until onCharacteristicWrite
+                if (status != BluetoothGatt.GATT_SUCCESS) {
+                    error("BLE write failed at offset $off/${framed.size}: status=$status")
+                }
                 off = end
             }
         }

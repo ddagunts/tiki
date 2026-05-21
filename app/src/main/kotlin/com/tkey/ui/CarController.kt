@@ -13,6 +13,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -69,8 +70,13 @@ class CarController(
      * picks up "paired" state changes between reconnects.
      */
     fun start(vin: String, pairedProvider: () -> Boolean = { true }) {
-        loopJob?.cancel()
-        loopJob = scope.launch { runLoop(vin, pairedProvider) }
+        // Chain the new loop after the old one's `finally { cleanupSession() }` so we don't
+        // race a still-disconnecting connection from the previous iteration.
+        val previous = loopJob
+        loopJob = scope.launch {
+            previous?.cancelAndJoin()
+            runLoop(vin, pairedProvider)
+        }
     }
 
     fun stop() {
