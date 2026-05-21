@@ -853,13 +853,18 @@ private fun HeroCard(
                 }
                 Column(horizontalAlignment = Alignment.End) {
                     PhaseChip(phase = phase, connState = connState)
+                    Spacer(Modifier.height(6.dp))
+                    // Always render the chip — show "—" until ChargeState arrives — so the
+                    // hero card's height is stable and the action grid below it doesn't
+                    // shift down when vehicle data lands mid-handshake.
                     val cs = vehicleData?.data?.chargeState
-                    if (cs != null && (cs.hasBatteryRange() || cs.hasEstBatteryRange())) {
-                        Spacer(Modifier.height(6.dp))
-                        val miles = if (cs.hasEstBatteryRange()) cs.estBatteryRange else cs.batteryRange
-                        val pct = if (cs.hasBatteryLevel()) cs.batteryLevel else null
-                        RangeChip(miles = miles, batteryPct = pct)
+                    val miles = when {
+                        cs?.hasEstBatteryRange() == true -> cs.estBatteryRange
+                        cs?.hasBatteryRange() == true -> cs.batteryRange
+                        else -> null
                     }
+                    val pct = if (cs?.hasBatteryLevel() == true) cs.batteryLevel else null
+                    RangeChip(miles = miles, batteryPct = pct)
                 }
             }
 
@@ -968,7 +973,10 @@ private fun LockOrb(color: Color, locked: Boolean, animate: Boolean) {
 }
 
 @Composable
-private fun RangeChip(miles: Float, batteryPct: Int?) {
+private fun RangeChip(miles: Float?, batteryPct: Int?) {
+    val hasData = miles != null
+    val accent = if (hasData) Accent else TextMuted
+    val fg = if (hasData) MaterialTheme.colorScheme.onBackground else TextMuted
     Row(
         modifier = Modifier
             .clip(RoundedCornerShape(999.dp))
@@ -980,16 +988,16 @@ private fun RangeChip(miles: Float, batteryPct: Int?) {
         Icon(
             Icons.Filled.BatteryChargingFull,
             contentDescription = null,
-            tint = Accent,
+            tint = accent,
             modifier = Modifier.size(20.dp),
         )
         Spacer(Modifier.width(8.dp))
-        val rangeText = "${miles.toInt()} mi"
+        val rangeText = miles?.let { "${it.toInt()} mi" } ?: "— mi"
         val pctText = batteryPct?.let { " · $it%" } ?: ""
         Text(
             rangeText + pctText,
             style = MaterialTheme.typography.titleMedium.copy(letterSpacing = 0.4.sp),
-            color = MaterialTheme.colorScheme.onBackground,
+            color = fg,
             fontFamily = FontFamily.SansSerif,
             fontWeight = FontWeight.SemiBold,
         )

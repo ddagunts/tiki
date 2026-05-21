@@ -1,0 +1,3 @@
+Stop the action grid from shifting when the battery/range chip first appears.
+
+- Hero card: the battery / range chip is now reserved on the connected-car screen from the moment it loads, with a muted "— mi" placeholder until vehicle data arrives. Previously the chip popped into existence after the first ChargeState response, growing the hero card's height and shifting all the buttons and status panels below it down a notch.
