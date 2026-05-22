@@ -1,0 +1,3 @@
+Show live proximity-unlock signal on the home screen.
+
+- Each car with proximity unlock enabled now shows a compact live readout on its home-screen card: the current smoothed RSSI in dBm, a NEAR / FAR state badge, and the configured unlock and lock thresholds. The numbers refresh as the proximity service publishes new beacon samples — no need to dive into Settings → Calibration to see whether the car is "seeing" you.

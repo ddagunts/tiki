@@ -209,9 +209,11 @@ private fun Screen(modifier: Modifier = Modifier) {
     var showDetails by rememberSaveable { mutableStateOf(false) }
     var subscreen by rememberSaveable { mutableStateOf("main") }
     var settingsVin by rememberSaveable { mutableStateOf<String?>(null) }
-    val proxConfigs = remember(cars.size) {
-        cars.associate { it.vin to carStore.getProximity(it.vin) }
-    }
+    // Registry's configs map only contains *enabled* cars and updates whenever the user
+    // toggles proximity in settings, so the home-screen badge + live readout stay in sync
+    // without re-reading SharedPreferences on every recomposition.
+    val proxConfigs by ProximityRegistry.configs.collectAsState()
+    val proxLive by ProximityRegistry.live.collectAsState()
 
     LaunchedEffect(Unit) {
         // Seed registry so settings UI reflects persisted enabled-state immediately.
@@ -461,7 +463,8 @@ private fun Screen(modifier: Modifier = Modifier) {
                     for (car in cars) {
                         CarCard(
                             car = car,
-                            proximityEnabled = proxConfigs[car.vin]?.enabled == true,
+                            proximityConfig = proxConfigs[car.vin],
+                            liveState = proxLive[car.vin],
                             onSelect = {
                                 vin = car.vin
                                 selectedName = car.name
@@ -623,11 +626,13 @@ private fun EmptyCarsCard(onAdd: () -> Unit) {
 @Composable
 private fun CarCard(
     car: SavedCar,
-    proximityEnabled: Boolean,
+    proximityConfig: ProximityConfig?,
+    liveState: ProximityRegistry.LiveState?,
     onSelect: () -> Unit,
     onSettings: () -> Unit,
     onDelete: () -> Unit,
 ) {
+    val proximityEnabled = proximityConfig?.enabled == true
     Surface(
         modifier = Modifier
             .fillMaxWidth()
@@ -636,89 +641,146 @@ private fun CarCard(
             .clickable(onClick = onSelect),
         color = Graphite,
     ) {
-        Row(
-            modifier = Modifier.padding(18.dp).fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(52.dp)
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(
-                        Brush.linearGradient(
-                            listOf(Color(0xFF1B3631), AccentDim),
+        Column(modifier = Modifier.padding(18.dp).fillMaxWidth()) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(52.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(
+                            Brush.linearGradient(
+                                listOf(Color(0xFF1B3631), AccentDim),
+                            ),
                         ),
-                    ),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.ElectricCar,
-                    contentDescription = null,
-                    tint = Accent,
-                    modifier = Modifier.size(26.dp),
-                )
-            }
-            Spacer(Modifier.width(16.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    car.name,
-                    style = MaterialTheme.typography.titleLarge,
-                    color = MaterialTheme.colorScheme.onBackground,
-                )
-                Spacer(Modifier.height(4.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        "VIN",
-                        style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 1.2.sp),
-                        color = TextMuted,
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.ElectricCar,
+                        contentDescription = null,
+                        tint = Accent,
+                        modifier = Modifier.size(26.dp),
                     )
-                    Spacer(Modifier.width(8.dp))
+                }
+                Spacer(Modifier.width(16.dp))
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        "••••••${car.vin.takeLast(6)}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = TextSecondary,
-                        fontFamily = FontFamily.Monospace,
+                        car.name,
+                        style = MaterialTheme.typography.titleLarge,
+                        color = MaterialTheme.colorScheme.onBackground,
                     )
-                    if (proximityEnabled) {
-                        Spacer(Modifier.width(10.dp))
-                        Box(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(999.dp))
-                                .background(AccentDim)
-                                .padding(horizontal = 8.dp, vertical = 2.dp),
-                        ) {
-                            Text(
-                                "PROX",
-                                style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 1.2.sp),
-                                color = Accent,
-                                fontWeight = FontWeight.SemiBold,
-                            )
+                    Spacer(Modifier.height(4.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "VIN",
+                            style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 1.2.sp),
+                            color = TextMuted,
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "••••••${car.vin.takeLast(6)}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextSecondary,
+                            fontFamily = FontFamily.Monospace,
+                        )
+                        if (proximityEnabled) {
+                            Spacer(Modifier.width(10.dp))
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(999.dp))
+                                    .background(AccentDim)
+                                    .padding(horizontal = 8.dp, vertical = 2.dp),
+                            ) {
+                                Text(
+                                    "PROX",
+                                    style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 1.2.sp),
+                                    color = Accent,
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                            }
                         }
                     }
                 }
+                IconAffordance(
+                    icon = Icons.AutoMirrored.Filled.ArrowForward,
+                    tint = Accent,
+                    bg = AccentDim,
+                    onClick = onSelect,
+                )
+                Spacer(Modifier.width(8.dp))
+                IconAffordance(
+                    icon = Icons.Filled.Settings,
+                    tint = Accent,
+                    bg = GraphiteHi,
+                    onClick = onSettings,
+                )
+                Spacer(Modifier.width(8.dp))
+                IconAffordance(
+                    icon = Icons.Filled.Delete,
+                    tint = TextMuted,
+                    bg = GraphiteHi,
+                    onClick = onDelete,
+                )
             }
-            IconAffordance(
-                icon = Icons.AutoMirrored.Filled.ArrowForward,
-                tint = Accent,
-                bg = AccentDim,
-                onClick = onSelect,
+
+            if (proximityEnabled) {
+                Spacer(Modifier.height(14.dp))
+                Divider()
+                Spacer(Modifier.height(12.dp))
+                ProximityLiveReadout(cfg = proximityConfig!!, live = liveState)
+            }
+        }
+    }
+}
+
+/**
+ * Compact live readout shown beneath a car card when proximity unlock is active.
+ * Auto-updates as [ProximityRegistry] publishes new samples (every beacon and every
+ * 2 s service tick), so the numbers reflect reality without a manual refresh.
+ */
+@Composable
+private fun ProximityLiveReadout(
+    cfg: ProximityConfig,
+    live: ProximityRegistry.LiveState?,
+) {
+    val emaInt = live?.ema?.roundToInt()
+    val isNear = live?.fsmState == ProximityFsm.State.Near
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                "SIGNAL",
+                style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 1.2.sp),
+                color = TextMuted,
             )
-            Spacer(Modifier.width(8.dp))
-            IconAffordance(
-                icon = Icons.Filled.Settings,
-                tint = Accent,
-                bg = GraphiteHi,
-                onClick = onSettings,
+            Spacer(Modifier.height(2.dp))
+            Text(
+                if (emaInt != null) "$emaInt dBm" else "Waiting for beacon…",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onBackground,
+                fontFamily = FontFamily.Monospace,
             )
-            Spacer(Modifier.width(8.dp))
-            IconAffordance(
-                icon = Icons.Filled.Delete,
-                tint = TextMuted,
-                bg = GraphiteHi,
-                onClick = onDelete,
+        }
+        Box(
+            modifier = Modifier
+                .clip(RoundedCornerShape(999.dp))
+                .background(if (isNear) AccentDim else GraphiteHi)
+                .border(1.dp, Hairline, RoundedCornerShape(999.dp))
+                .padding(horizontal = 10.dp, vertical = 4.dp),
+        ) {
+            Text(
+                if (isNear) "NEAR" else "FAR",
+                style = MaterialTheme.typography.labelMedium.copy(letterSpacing = 1.6.sp),
+                color = if (isNear) Success else TextMuted,
+                fontWeight = FontWeight.SemiBold,
             )
         }
     }
+    Spacer(Modifier.height(6.dp))
+    Text(
+        "Unlock ≥ ${cfg.unlockRssi} dBm  ·  Lock ≤ ${cfg.lockRssi} dBm",
+        style = MaterialTheme.typography.bodySmall,
+        color = TextSecondary,
+        fontFamily = FontFamily.Monospace,
+    )
 }
 
 @Composable
