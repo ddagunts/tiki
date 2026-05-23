@@ -1,0 +1,6 @@
+Live climate state in the Comfort screen + swapped Lock/Unlock.
+
+- Comfort screen now refreshes climate state when it opens and again after every toggle (~1.5s after each action), so HVAC on/off, climate keeper mode, and per-seat heater/cooler levels reflect what the car is actually doing instead of going stale for up to a minute.
+- Climate ON / OFF tiles show a green or red accent matching the live state. New sub-labels above the ON/OFF row and the climate-keeper row spell out the current value ("CLIMATE · ON", "CLIMATE KEEPER · DOG", etc.).
+- Each seat row prints its current level next to the label ("DRIVER HEAT · MED"). When climate data hasn't arrived yet, the row shows "—" instead of falsely highlighting Off.
+- Swapped the Lock and Unlock tiles on the Controls grid — Unlock is now on the left, Lock on the right.

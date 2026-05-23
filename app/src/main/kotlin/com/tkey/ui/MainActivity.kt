@@ -1258,19 +1258,19 @@ private fun ActionGrid(
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
             ActionTile(
                 modifier = Modifier.weight(1f),
-                icon = Icons.Filled.Lock,
-                label = "Lock",
-                enabled = enabled,
-                accent = Success,
-                onClick = onLock,
-            )
-            ActionTile(
-                modifier = Modifier.weight(1f),
                 icon = Icons.Filled.LockOpen,
                 label = "Unlock",
                 enabled = enabled,
                 accent = Warning,
                 onClick = onUnlock,
+            )
+            ActionTile(
+                modifier = Modifier.weight(1f),
+                icon = Icons.Filled.Lock,
+                label = "Lock",
+                enabled = enabled,
+                accent = Success,
+                onClick = onLock,
             )
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
@@ -2067,9 +2067,27 @@ private fun ComfortScreen(
     val driverTempC = if (climate?.hasDriverTempSetting() == true) climate.driverTempSetting else 21f
     val passengerTempC = if (climate?.hasPassengerTempSetting() == true) climate.passengerTempSetting else driverTempC
     val climateOn = climate?.hasIsClimateOn() == true && climate.isClimateOn
+    val climateKnown = climate?.hasIsClimateOn() == true
     val stwHeat = climate?.steeringWheelHeatActive() == true
     val bio = climate?.hasBioweaponModeOn() == true && climate.bioweaponModeOn
     val precondMax = climate?.hasIsPreconditioning() == true && climate.isPreconditioning
+
+    // Pull a fresh climate snapshot the moment the user lands on Comfort, instead of
+    // waiting up to 60s for the background poll — otherwise the toggles & seat pills
+    // either look blank or reflect stale state.
+    LaunchedEffect(enabled) {
+        if (enabled) runCatching { session.requestClimateState() }
+    }
+
+    // Any action that mutates climate state should be followed by a re-read so the UI
+    // catches up. The car needs a beat to apply the command before reporting it back.
+    val runAndRefresh: (suspend () -> Unit) -> Unit = { block ->
+        run {
+            block()
+            delay(1500)
+            runCatching { session.requestClimateState() }
+        }
+    }
 
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
         BackPill(label = "Controls", onClick = onBack)
@@ -2101,21 +2119,28 @@ private fun ComfortScreen(
                     }
                 }
             }
+            val climateStateLabel = when {
+                !climateKnown -> "—"
+                climateOn -> "ON"
+                else -> "OFF"
+            }
+            SubLabel("CLIMATE · $climateStateLabel")
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                 ActionTile(
                     modifier = Modifier.weight(1f),
                     icon = Icons.Filled.Thermostat,
-                    label = if (climateOn) "Climate ON" else "Turn ON",
+                    label = if (climateOn) "ON" else "Turn ON",
                     enabled = enabled,
                     accent = if (climateOn) Success else Accent,
-                    onClick = { run { session.climateOn() } },
+                    onClick = { runAndRefresh { session.climateOn() } },
                 )
                 ActionTile(
                     modifier = Modifier.weight(1f),
                     icon = Icons.Filled.PowerSettingsNew,
-                    label = "Turn OFF",
+                    label = if (climateKnown && !climateOn) "OFF" else "Turn OFF",
                     enabled = enabled,
-                    onClick = { run { session.climateOff() } },
+                    accent = if (climateKnown && !climateOn) Danger else Accent,
+                    onClick = { runAndRefresh { session.climateOff() } },
                 )
             }
             Row(
@@ -2143,7 +2168,7 @@ private fun ComfortScreen(
                         selected = false,
                         enabled = enabled,
                         onClick = {
-                            run { session.setClimateTemperature(cool, cool) }
+                            runAndRefresh { session.setClimateTemperature(cool, cool) }
                         },
                     )
                     PillBtn(
@@ -2152,7 +2177,7 @@ private fun ComfortScreen(
                         selected = false,
                         enabled = enabled,
                         onClick = {
-                            run { session.setClimateTemperature(warm, warm) }
+                            runAndRefresh { session.setClimateTemperature(warm, warm) }
                         },
                     )
                 }
@@ -2163,14 +2188,14 @@ private fun ComfortScreen(
                     labelPrefix = "Wheel heat",
                     state = stwHeat,
                     enabled = enabled,
-                    onToggle = { run { session.setSteeringWheelHeater(it) } },
+                    onToggle = { runAndRefresh { session.setSteeringWheelHeater(it) } },
                 )
                 OptimisticTogglePill(
                     modifier = Modifier.weight(1f),
                     labelPrefix = "Precond Max",
                     state = precondMax,
                     enabled = enabled,
-                    onToggle = { run { session.setPreconditioningMax(it) } },
+                    onToggle = { runAndRefresh { session.setPreconditioningMax(it) } },
                 )
             }
             OptimisticTogglePill(
@@ -2178,7 +2203,7 @@ private fun ComfortScreen(
                 labelPrefix = "Bioweapon defense",
                 state = bio,
                 enabled = enabled,
-                onToggle = { run { session.setBioweaponMode(it) } },
+                onToggle = { runAndRefresh { session.setBioweaponMode(it) } },
             )
         }
 
@@ -2247,45 +2272,45 @@ private fun ComfortScreen(
                 label = "Driver heat",
                 current = climate?.seatHeaterLeftIfHas(),
                 enabled = enabled,
-                onSet = { lvl -> run { session.setSeatHeater(TeslaSession.SeatPosition.FRONT_LEFT, lvl) } },
+                onSet = { lvl -> runAndRefresh { session.setSeatHeater(TeslaSession.SeatPosition.FRONT_LEFT, lvl) } },
             )
             SeatRow(
                 label = "Passenger heat",
                 current = climate?.seatHeaterRightIfHas(),
                 enabled = enabled,
-                onSet = { lvl -> run { session.setSeatHeater(TeslaSession.SeatPosition.FRONT_RIGHT, lvl) } },
+                onSet = { lvl -> runAndRefresh { session.setSeatHeater(TeslaSession.SeatPosition.FRONT_RIGHT, lvl) } },
             )
             Divider()
             SeatRow(
                 label = "Rear left heat",
                 current = climate?.seatHeaterRearLeftIfHas(),
                 enabled = enabled,
-                onSet = { lvl -> run { session.setSeatHeater(TeslaSession.SeatPosition.REAR_LEFT, lvl) } },
+                onSet = { lvl -> runAndRefresh { session.setSeatHeater(TeslaSession.SeatPosition.REAR_LEFT, lvl) } },
             )
             SeatRow(
                 label = "Rear center heat",
                 current = climate?.seatHeaterRearCenterIfHas(),
                 enabled = enabled,
-                onSet = { lvl -> run { session.setSeatHeater(TeslaSession.SeatPosition.REAR_CENTER, lvl) } },
+                onSet = { lvl -> runAndRefresh { session.setSeatHeater(TeslaSession.SeatPosition.REAR_CENTER, lvl) } },
             )
             SeatRow(
                 label = "Rear right heat",
                 current = climate?.seatHeaterRearRightIfHas(),
                 enabled = enabled,
-                onSet = { lvl -> run { session.setSeatHeater(TeslaSession.SeatPosition.REAR_RIGHT, lvl) } },
+                onSet = { lvl -> runAndRefresh { session.setSeatHeater(TeslaSession.SeatPosition.REAR_RIGHT, lvl) } },
             )
             Divider()
             SeatCoolerRow(
                 label = "Driver cool",
                 current = climate?.seatFanFrontLeftIfHas(),
                 enabled = enabled,
-                onSet = { lvl -> run { session.setSeatCooler(TeslaSession.SeatPosition.FRONT_LEFT, lvl) } },
+                onSet = { lvl -> runAndRefresh { session.setSeatCooler(TeslaSession.SeatPosition.FRONT_LEFT, lvl) } },
             )
             SeatCoolerRow(
                 label = "Passenger cool",
                 current = climate?.seatFanFrontRightIfHas(),
                 enabled = enabled,
-                onSet = { lvl -> run { session.setSeatCooler(TeslaSession.SeatPosition.FRONT_RIGHT, lvl) } },
+                onSet = { lvl -> runAndRefresh { session.setSeatCooler(TeslaSession.SeatPosition.FRONT_RIGHT, lvl) } },
             )
             Divider()
             val autoLeft = climate?.hasAutoSeatClimateLeft() == true && climate.autoSeatClimateLeft
@@ -2296,14 +2321,14 @@ private fun ComfortScreen(
                     text = "Auto driver: " + if (autoLeft) "ON" else "OFF",
                     selected = autoLeft,
                     enabled = enabled,
-                    onClick = { run { session.setAutoSeatClimate(TeslaSession.SeatPosition.FRONT_LEFT, !autoLeft) } },
+                    onClick = { runAndRefresh { session.setAutoSeatClimate(TeslaSession.SeatPosition.FRONT_LEFT, !autoLeft) } },
                 )
                 PillBtn(
                     modifier = Modifier.weight(1f),
                     text = "Auto passenger: " + if (autoRight) "ON" else "OFF",
                     selected = autoRight,
                     enabled = enabled,
-                    onClick = { run { session.setAutoSeatClimate(TeslaSession.SeatPosition.FRONT_RIGHT, !autoRight) } },
+                    onClick = { runAndRefresh { session.setAutoSeatClimate(TeslaSession.SeatPosition.FRONT_RIGHT, !autoRight) } },
                 )
             }
         }
@@ -2311,19 +2336,27 @@ private fun ComfortScreen(
         SectionLabel("Climate keeper")
         SubCard {
             val current = climate?.climateKeeperMode?.typeCase
+            val keeperLabel = when (current) {
+                Vehicle.ClimateState.ClimateKeeperMode.TypeCase.OFF -> "OFF"
+                Vehicle.ClimateState.ClimateKeeperMode.TypeCase.ON -> "ON"
+                Vehicle.ClimateState.ClimateKeeperMode.TypeCase.DOG -> "DOG"
+                Vehicle.ClimateState.ClimateKeeperMode.TypeCase.PARTY -> "CAMP"
+                else -> "—"
+            }
+            SubLabel("CLIMATE KEEPER · $keeperLabel")
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
                 ClimateKeeperBtn("Off", current, Vehicle.ClimateState.ClimateKeeperMode.TypeCase.OFF,
                     CarServer.HvacClimateKeeperAction.ClimateKeeperAction_E.ClimateKeeperAction_Off,
-                    enabled, run, session, Modifier.weight(1f))
+                    enabled, runAndRefresh, session, Modifier.weight(1f))
                 ClimateKeeperBtn("On", current, Vehicle.ClimateState.ClimateKeeperMode.TypeCase.ON,
                     CarServer.HvacClimateKeeperAction.ClimateKeeperAction_E.ClimateKeeperAction_On,
-                    enabled, run, session, Modifier.weight(1f))
+                    enabled, runAndRefresh, session, Modifier.weight(1f))
                 ClimateKeeperBtn("Dog", current, Vehicle.ClimateState.ClimateKeeperMode.TypeCase.DOG,
                     CarServer.HvacClimateKeeperAction.ClimateKeeperAction_E.ClimateKeeperAction_Dog,
-                    enabled, run, session, Modifier.weight(1f))
+                    enabled, runAndRefresh, session, Modifier.weight(1f))
                 ClimateKeeperBtn("Camp", current, Vehicle.ClimateState.ClimateKeeperMode.TypeCase.PARTY,
                     CarServer.HvacClimateKeeperAction.ClimateKeeperAction_E.ClimateKeeperAction_Camp,
-                    enabled, run, session, Modifier.weight(1f))
+                    enabled, runAndRefresh, session, Modifier.weight(1f))
             }
         }
 
@@ -2368,9 +2401,17 @@ private fun SeatRow(
     LaunchedEffect(current) {
         if (optimistic != null && current != null && current == optimistic) optimistic = null
     }
-    val displayed = optimistic ?: current ?: 0
+    // Differentiate "no data yet" (current == null && no optimistic) from explicit Off.
+    val displayed: Int? = optimistic ?: current
+    val displayLabel = when (displayed) {
+        null -> "—"
+        0 -> "OFF"
+        1 -> "LOW"
+        2 -> "MED"
+        else -> "HIGH"
+    }
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        SubLabel(label.uppercase())
+        SubLabel("${label.uppercase()} · $displayLabel")
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
             heaterLevels.forEachIndexed { idx, (text, lvl) ->
                 val active = idx > 0
@@ -2402,9 +2443,16 @@ private fun SeatCoolerRow(
     LaunchedEffect(current) {
         if (optimistic != null && current != null && current == optimistic) optimistic = null
     }
-    val displayed = optimistic ?: current ?: 0
+    val displayed: Int? = optimistic ?: current
+    val displayLabel = when (displayed) {
+        null -> "—"
+        0 -> "OFF"
+        1 -> "LOW"
+        2 -> "MED"
+        else -> "HIGH"
+    }
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        SubLabel(label.uppercase())
+        SubLabel("${label.uppercase()} · $displayLabel")
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
             coolerLevels.forEachIndexed { idx, (text, lvl) ->
                 val active = idx > 0
