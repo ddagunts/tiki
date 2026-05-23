@@ -1,0 +1,4 @@
+Show your favorite car's live proximity state in the notification.
+
+- The proximity-unlock foreground notification now displays the favorite car's current signal strength, NEAR/FAR state, and the next threshold the unlock state machine is waiting for ("next: lock @ -90 dBm" or "next: unlock @ -65 dBm"). Refreshes every 15 seconds while scanning.
+- Pick the favorite by tapping the star on a car's home-screen card — the filled star marks which car is featured in the notification. If you don't pick one, it defaults to the first enabled car.

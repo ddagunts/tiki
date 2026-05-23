@@ -29,6 +29,7 @@ import com.tkey.ui.CarStore
 import com.tkey.ui.MainActivity
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.math.roundToInt
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -79,6 +80,7 @@ class ProximityService : Service() {
 
     private var scannerJob: Job? = null
     private var tickerJob: Job? = null
+    private var notifJob: Job? = null
     private var commanderStarted = false
     private var idleWatcherStarted = false
     private var inCommand = false
@@ -98,7 +100,7 @@ class ProximityService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startForeground(
             NOTIF_ID,
-            buildNotification("Watching for vehicles"),
+            buildNotification("TKey proximity", "Watching for vehicles"),
             ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
         )
         reload()
@@ -157,8 +159,10 @@ class ProximityService : Service() {
     }
 
     private fun reload() {
-        val cfgs = CarStore(this).enabledProximity()
+        val store = CarStore(this)
+        val cfgs = store.enabledProximity()
         ProximityRegistry.setConfigs(cfgs)
+        ProximityRegistry.seedFavoriteVin(store.favoriteProximityVin())
         ProximityRegistry.pruneLive(cfgs.keys)
         if (cfgs.isEmpty()) {
             stopSelf()
@@ -199,6 +203,9 @@ class ProximityService : Service() {
         }
         if (tickerJob == null) {
             tickerJob = scope.launch { tickerLoop() }
+        }
+        if (notifJob == null) {
+            notifJob = scope.launch { notificationLoop() }
         }
         if (!commanderStarted) {
             commanderStarted = true
@@ -288,7 +295,7 @@ class ProximityService : Service() {
             if (fsms.isNotEmpty() && scannerJob == null && btEnabled) {
                 scannerJob = scope.launch { scannerLoop() }
                 ProximityRegistry.setServiceState(ProximityRegistry.ServiceState.Scanning)
-                updateNotification("Watching for vehicles")
+                refreshLiveNotification()
             } else if (!btEnabled) {
                 ProximityRegistry.setServiceState(ProximityRegistry.ServiceState.WaitingForBluetooth)
                 updateNotification("Waiting for Bluetooth")
@@ -377,7 +384,7 @@ class ProximityService : Service() {
             if (fsms.isNotEmpty() && scannerJob == null && btEnabled) {
                 scannerJob = scope.launch { scannerLoop() }
                 ProximityRegistry.setServiceState(ProximityRegistry.ServiceState.Scanning)
-                updateNotification("Watching for vehicles")
+                refreshLiveNotification()
             }
         }
     }
@@ -426,7 +433,7 @@ class ProximityService : Service() {
         mgr.createNotificationChannel(ch)
     }
 
-    private fun buildNotification(text: String): Notification {
+    private fun buildNotification(title: String, text: String): Notification {
         val openApp = PendingIntent.getActivity(
             this,
             0,
@@ -435,7 +442,7 @@ class ProximityService : Service() {
         )
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_lock_idle_lock)
-            .setContentTitle("TKey proximity")
+            .setContentTitle(title)
             .setContentText(text)
             .setContentIntent(openApp)
             .setOngoing(true)
@@ -445,14 +452,66 @@ class ProximityService : Service() {
     }
 
     private fun updateNotification(text: String) {
+        updateNotification("TKey proximity", text)
+    }
+
+    private fun updateNotification(title: String, text: String) {
         val mgr = getSystemService(NotificationManager::class.java) ?: return
-        mgr.notify(NOTIF_ID, buildNotification(text))
+        mgr.notify(NOTIF_ID, buildNotification(title, text))
+    }
+
+    /**
+     * Periodically rewrites the notification with the favorite car's live RSSI, FSM state,
+     * and the next threshold the FSM is waiting to cross. Only active during [ServiceState.Scanning];
+     * transient states (Commanding / Idle / WaitingForBluetooth) keep their inline label.
+     */
+    private suspend fun notificationLoop() {
+        // Push an initial live frame so the user doesn't have to wait the full tick for the
+        // first numeric reading after the service starts.
+        refreshLiveNotification()
+        while (currentCoroutineContext().isActive) {
+            delay(NOTIF_TICK_MS)
+            refreshLiveNotification()
+        }
+    }
+
+    private fun refreshLiveNotification() {
+        if (ProximityRegistry.serviceState.value != ProximityRegistry.ServiceState.Scanning) return
+        val (title, text) = buildLiveNotificationContent() ?: return
+        updateNotification(title, text)
+    }
+
+    /**
+     * Pick the favorite VIN (or first enabled fallback) and format its live state into a
+     * title/text pair. Returns null when nothing is enabled — caller leaves notification alone.
+     */
+    private fun buildLiveNotificationContent(): Pair<String, String>? {
+        val cfgs = ProximityRegistry.configs.value
+        if (cfgs.isEmpty()) return null
+        val store = CarStore(this)
+        val favorite = ProximityRegistry.favoriteVin.value?.takeIf { it in cfgs }
+        val vin = favorite ?: cfgs.keys.minOrNull() ?: return null
+        val cfg = cfgs[vin] ?: return null
+        val name = store.list().firstOrNull { it.vin == vin }?.name ?: "Vehicle"
+        val live = ProximityRegistry.live.value[vin]
+        val isNear = live?.fsmState == ProximityFsm.State.Near
+        val ema = live?.ema?.roundToInt()
+        val signalPart = if (ema != null) "$ema dBm" else "waiting…"
+        val stateLabel = if (isNear) "NEAR" else "FAR"
+        val nextDirection = if (isNear) "lock" else "unlock"
+        val nextThreshold = if (isNear) cfg.lockRssi else cfg.unlockRssi
+        // Single-line so it fits the collapsed notification view; the title carries the car name.
+        val text = "$stateLabel · $signalPart · next: $nextDirection @ $nextThreshold dBm"
+        return "TKey · $name" to text
     }
 
     companion object {
         private const val NOTIF_ID = 1001
         private const val CHANNEL_ID = "tkey_proximity"
         private const val TICK_MS = 2_000L
+        // Notification refresh cadence — user-visible info, no need to update faster than
+        // the eye can read. Kept independent of TICK_MS to avoid hammering NotificationManager.
+        private const val NOTIF_TICK_MS = 15_000L
         private const val IDLE_AFTER_MS = 10 * 60_000L
         private const val BEACON_TIMEOUT_MS = 30_000L
         private const val CONNECT_TIMEOUT_MS = 15_000L

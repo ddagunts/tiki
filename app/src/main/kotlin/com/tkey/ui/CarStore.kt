@@ -55,6 +55,7 @@ class CarStore(context: Context) {
         removeProximity(vin)
         setPaired(vin, false)
         if (lastVin() == vin) setLastVin(null)
+        if (favoriteProximityVin() == vin) setFavoriteProximityVin(null)
         return current
     }
 
@@ -103,6 +104,19 @@ class CarStore(context: Context) {
         }
     }
 
+    /**
+     * VIN of the car whose live proximity state should be surfaced in the foreground-service
+     * notification. Single string by design — only one car at a time gets featured. Null
+     * means "no explicit favorite"; callers should fall back to the first enabled VIN.
+     */
+    fun favoriteProximityVin(): String? = prefs.getString(KEY_FAVORITE_PROX_VIN, null)
+
+    fun setFavoriteProximityVin(vin: String?) {
+        val editor = prefs.edit()
+        if (vin == null) editor.remove(KEY_FAVORITE_PROX_VIN) else editor.putString(KEY_FAVORITE_PROX_VIN, vin)
+        editor.apply()
+    }
+
     private fun save(cars: List<SavedCar>) {
         val arr = JSONArray()
         for (c in cars) {
@@ -122,6 +136,7 @@ class CarStore(context: Context) {
         private const val KEY_LAST_VIN = "last_vin"
         private const val KEY_PAIRED_VINS = "paired_vins"
         private const val KEY_HIDE_BACK_PILL = "hide_back_pill"
+        private const val KEY_FAVORITE_PROX_VIN = "favorite_prox_vin"
         private val VIN_REGEX = Regex("^[A-Z0-9]{17}$")
 
         private fun proxKey(vin: String) = "prox_$vin"

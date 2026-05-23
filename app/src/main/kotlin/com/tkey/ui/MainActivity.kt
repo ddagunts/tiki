@@ -82,6 +82,8 @@ import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Thermostat
 import androidx.compose.material.icons.filled.Tune
@@ -214,6 +216,7 @@ private fun Screen(modifier: Modifier = Modifier) {
     // without re-reading SharedPreferences on every recomposition.
     val proxConfigs by ProximityRegistry.configs.collectAsState()
     val proxLive by ProximityRegistry.live.collectAsState()
+    val favoriteVin by ProximityRegistry.favoriteVin.collectAsState()
 
     LaunchedEffect(Unit) {
         // Seed registry so settings UI reflects persisted enabled-state immediately.
@@ -461,10 +464,20 @@ private fun Screen(modifier: Modifier = Modifier) {
             } else {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     for (car in cars) {
+                        // Effective favorite mirrors ProximityService's fallback rule
+                        // (explicit favorite if still enabled; otherwise lexicographically
+                        // first enabled VIN) so the star always reflects which car the
+                        // notification is actually showing.
+                        val explicitFav = favoriteVin?.takeIf { it in proxConfigs }
+                        val effectiveFavorite = explicitFav ?: proxConfigs.keys.minOrNull()
                         CarCard(
                             car = car,
                             proximityConfig = proxConfigs[car.vin],
                             liveState = proxLive[car.vin],
+                            isFavorite = car.vin == effectiveFavorite,
+                            onToggleFavorite = {
+                                ProximityRegistry.setFavorite(ctx, car.vin)
+                            },
                             onSelect = {
                                 vin = car.vin
                                 selectedName = car.name
@@ -628,6 +641,8 @@ private fun CarCard(
     car: SavedCar,
     proximityConfig: ProximityConfig?,
     liveState: ProximityRegistry.LiveState?,
+    isFavorite: Boolean,
+    onToggleFavorite: () -> Unit,
     onSelect: () -> Unit,
     onSettings: () -> Unit,
     onDelete: () -> Unit,
@@ -695,6 +710,23 @@ private fun CarCard(
                                     style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 1.2.sp),
                                     color = Accent,
                                     fontWeight = FontWeight.SemiBold,
+                                )
+                            }
+                            Spacer(Modifier.width(6.dp))
+                            // Star: filled = this VIN is shown live in the notification.
+                            // Tap toggles favorite (sets to this VIN, or clears if already favorite).
+                            Box(
+                                modifier = Modifier
+                                    .size(24.dp)
+                                    .clip(CircleShape)
+                                    .clickable(onClick = onToggleFavorite),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Icon(
+                                    imageVector = if (isFavorite) Icons.Filled.Star else Icons.Filled.StarBorder,
+                                    contentDescription = if (isFavorite) "Favorite (shown in notification)" else "Make favorite",
+                                    tint = if (isFavorite) Accent else TextMuted,
+                                    modifier = Modifier.size(18.dp),
                                 )
                             }
                         }

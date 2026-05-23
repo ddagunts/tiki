@@ -44,13 +44,22 @@ object ProximityRegistry {
     val serviceState: StateFlow<ServiceState> = _serviceState.asStateFlow()
 
     /**
+     * VIN whose live signal/threshold is shown in the foreground-service notification. Null
+     * means "no explicit favorite — fall back to first enabled VIN".
+     */
+    private val _favoriteVin = MutableStateFlow<String?>(null)
+    val favoriteVin: StateFlow<String?> = _favoriteVin.asStateFlow()
+
+    /**
      * Read [CarStore] for currently-enabled cars and either start the foreground service
      * (sending it a reload tickle) or stop it if no cars are enabled. Safe to call from any
      * thread; the actual service start/stop is dispatched through the OS.
      */
     fun refresh(ctx: Context) {
-        val cfgs = CarStore(ctx).enabledProximity()
+        val store = CarStore(ctx)
+        val cfgs = store.enabledProximity()
         _configs.value = cfgs
+        _favoriteVin.value = store.favoriteProximityVin()
         val intent = Intent(ctx, ProximityService::class.java)
         if (cfgs.isNotEmpty()) {
             ContextCompat.startForegroundService(ctx, intent)
@@ -59,8 +68,26 @@ object ProximityRegistry {
         }
     }
 
+    /**
+     * Persist [vin] (or null to clear) as the favorite and publish to the live flow so the
+     * UI star + notification flip in lock-step. Pass null to revert to default-pick behavior.
+     */
+    fun setFavorite(ctx: Context, vin: String?) {
+        CarStore(ctx).setFavoriteProximityVin(vin)
+        _favoriteVin.value = vin
+    }
+
     internal fun setConfigs(cfgs: Map<String, ProximityConfig>) {
         _configs.value = cfgs
+    }
+
+    /**
+     * Seed the in-memory favorite from prefs without re-writing them. Used when the service
+     * boots in a fresh process (e.g. START_STICKY restart) and the UI hasn't called
+     * [refresh] yet to seed the flow.
+     */
+    internal fun seedFavoriteVin(vin: String?) {
+        _favoriteVin.value = vin
     }
 
     internal fun publishLive(vin: String, snapshot: LiveState) {
