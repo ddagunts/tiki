@@ -16,6 +16,7 @@ import com.tkey.crypto.Session
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -42,6 +43,12 @@ class TeslaSession(
     private val identity: Identity,
     private val connection: CarConnection,
     val vin: String,
+    /**
+     * Seconds to wait for a VCSEC reply before declaring a signed command unanswered
+     * and refreshing the session. Returns 0 to disable. Read on every send so the
+     * user's choice takes effect immediately, without tearing down the link.
+     */
+    private val commandTimeoutSecProvider: () -> Int = { 0 },
 ) {
 
     /** State cached after a successful session_info handshake with a specific domain. */
@@ -614,7 +621,15 @@ class TeslaSession(
         connection.send(bytes)
     }
 
-    private suspend fun sendVcsecSigned(unsigned: Vcsec.UnsignedMessage, label: String) = sendMutex.withLock {
+    private suspend fun sendVcsecSigned(
+        unsigned: Vcsec.UnsignedMessage,
+        label: String,
+        /**
+         * Set when the timeout watcher is re-issuing the command after a re-handshake.
+         * Prevents an unanswered retry from launching its own retry → infinite loop.
+         */
+        isAutoRetry: Boolean = false,
+    ) = sendMutex.withLock {
         val state = domainStates[UniversalMessage.Domain.DOMAIN_VEHICLE_SECURITY]
             ?: error("VCSEC session not yet established — call requestSessionInfo first")
 
@@ -647,6 +662,7 @@ class TeslaSession(
             )
             .build()
 
+        val uuid = ByteString.copyFrom(randomBytes(16))
         val msg = UniversalMessage.RoutableMessage.newBuilder()
             .setToDestination(
                 UniversalMessage.Destination.newBuilder().setDomain(UniversalMessage.Domain.DOMAIN_VEHICLE_SECURITY)
@@ -657,12 +673,69 @@ class TeslaSession(
             )
             .setProtobufMessageAsBytes(ByteString.copyFrom(innerBytes))
             .setSignatureData(sigData)
-            .setUuid(ByteString.copyFrom(randomBytes(16)))
+            .setUuid(uuid)
             .build()
+
+        // Track for both the existing fault-handler lookup (`signedMessageStatus`) and the
+        // new timeout watcher below. tag is unused for VCSEC replies (no AEAD decryption
+        // on the response path) but PendingRequest's shape is shared with infotainment.
+        pendingByUuid[uuid] = PendingRequest(ByteArray(0), label, System.currentTimeMillis())
 
         val bytes = msg.toByteArray()
         Log.i(TAG, "TX $label counter=$counter expiresAt=$expiresAt bytes=${bytes.size}")
         connection.send(bytes)
+
+        val timeoutSec = commandTimeoutSecProvider()
+        if (timeoutSec > 0) {
+            scope.launch { watchSignedTimeout(uuid, unsigned, label, timeoutSec, isAutoRetry) }
+        }
+    }
+
+    /**
+     * If a signed VCSEC command goes unanswered for [timeoutSec] seconds, refresh the
+     * session (counter/epoch desync is the usual reason a command is silently ignored).
+     * For idempotent RKE actions we also re-fire the original command once — closures
+     * are intentionally NOT retried because they could double-actuate (e.g. open trunk
+     * fires, reply lost, user already pulled handle, retry slams it shut).
+     */
+    private suspend fun watchSignedTimeout(
+        uuid: ByteString,
+        unsigned: Vcsec.UnsignedMessage,
+        label: String,
+        timeoutSec: Int,
+        isAutoRetry: Boolean,
+    ) {
+        delay(timeoutSec * 1000L)
+        // Reply already landed → handleIncoming removed the entry. Nothing to do.
+        if (pendingByUuid.remove(uuid) == null) return
+        Log.w(TAG, "$label unanswered after ${timeoutSec}s — refreshing VCSEC session")
+
+        // Snapshot the current epoch so we can detect a fresh SessionInfo landing. The
+        // domainStates entry doesn't get cleared on requestSessionInfo — it's overwritten
+        // when the reply arrives — so we have to compare epoch bytes, not just presence.
+        val staleEpoch = domainStates[UniversalMessage.Domain.DOMAIN_VEHICLE_SECURITY]?.epoch
+        runCatching { requestSessionInfo(UniversalMessage.Domain.DOMAIN_VEHICLE_SECURITY) }
+            .onFailure { Log.w(TAG, "auto-refresh requestSessionInfo failed: ${it.message}") }
+
+        if (isAutoRetry || label !in RETRYABLE_LABELS) return
+
+        // Wait briefly for the new SessionInfo to land so the retry rides the fresh session.
+        // If the handshake itself doesn't complete in time we give up — better than
+        // spam-resending against a half-dead link.
+        val deadline = System.currentTimeMillis() + 2000L
+        while (System.currentTimeMillis() < deadline) {
+            val current = domainStates[UniversalMessage.Domain.DOMAIN_VEHICLE_SECURITY]?.epoch
+            if (current != null && (staleEpoch == null || !current.contentEquals(staleEpoch))) break
+            delay(100L)
+        }
+        val refreshed = domainStates[UniversalMessage.Domain.DOMAIN_VEHICLE_SECURITY]?.epoch
+        if (refreshed == null || (staleEpoch != null && refreshed.contentEquals(staleEpoch))) {
+            Log.w(TAG, "$label retry skipped: VCSEC handshake didn't complete after refresh")
+            return
+        }
+        Log.i(TAG, "$label auto-retry after session refresh")
+        runCatching { sendVcsecSigned(unsigned, label, isAutoRetry = true) }
+            .onFailure { Log.w(TAG, "$label auto-retry failed: ${it.message}") }
     }
 
     private fun vehicleClockNow(state: DomainState): Int {
@@ -673,6 +746,12 @@ class TeslaSession(
     private companion object Const {
         const val COMMAND_EXPIRY_SEC = 5
         val VOID: Common.Void = Common.Void.getDefaultInstance()
+        /**
+         * VCSEC commands the auto-recovery loop is allowed to re-fire after a session
+         * refresh. Lock + Unlock are idempotent (the car ends up in the requested state
+         * either way). Closures, windows, chargeport, and wake are intentionally absent.
+         */
+        val RETRYABLE_LABELS = setOf("RKE_LOCK", "RKE_UNLOCK")
     }
 
     /**
@@ -812,8 +891,21 @@ class TeslaSession(
         val fromDom = if (msg.fromDestination.hasDomain()) msg.fromDestination.domain.name else "addr"
         Log.i(TAG, "RX from=$fromDom payload=${msg.payloadCase}")
 
+        // Any VCSEC reply that echoes our request UUID is proof the car saw the command —
+        // clear the pending tracker so the timeout watcher in sendVcsecSigned doesn't fire.
+        // The successful-RKE path lands here as PROTOBUF_MESSAGE_AS_BYTES (often with an
+        // empty FromVCSECMessage); the failed path lands below as signedMessageStatus and
+        // has its own remove. Either way we want exactly one clear per command.
+        val fromDomain = if (msg.fromDestination.hasDomain()) msg.fromDestination.domain else null
+        if (fromDomain == UniversalMessage.Domain.DOMAIN_VEHICLE_SECURITY &&
+            !msg.requestUuid.isEmpty
+        ) {
+            pendingByUuid.remove(msg.requestUuid)?.let {
+                Log.i(TAG, "VCSEC ack for ${it.label}")
+            }
+        }
+
         if (msg.payloadCase == UniversalMessage.RoutableMessage.PayloadCase.PROTOBUF_MESSAGE_AS_BYTES) {
-            val fromDomain = if (msg.fromDestination.hasDomain()) msg.fromDestination.domain else null
             if (fromDomain == UniversalMessage.Domain.DOMAIN_INFOTAINMENT) {
                 handleInfotainmentResponse(msg)
             } else {

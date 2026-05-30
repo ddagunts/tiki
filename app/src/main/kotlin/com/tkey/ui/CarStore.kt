@@ -96,6 +96,17 @@ class CarStore(context: Context) {
         prefs.edit().putString(proxKey(vin), cfg.toJson().toString()).apply()
     }
 
+    /**
+     * Seconds to wait for VCSEC to acknowledge a signed command before declaring it
+     * unanswered and refreshing the session. 0 disables the watchdog. Default 3.
+     */
+    fun getCommandTimeoutSec(vin: String): Int =
+        prefs.getInt(cmdTimeoutKey(vin), DEFAULT_COMMAND_TIMEOUT_SEC).coerceIn(0, 5)
+
+    fun setCommandTimeoutSec(vin: String, sec: Int) {
+        prefs.edit().putInt(cmdTimeoutKey(vin), sec.coerceIn(0, 5)).apply()
+    }
+
     /** Returns (vin -> config) for every car that has proximity enabled. */
     fun enabledProximity(): Map<String, ProximityConfig> = buildMap {
         for (car in list()) {
@@ -131,6 +142,7 @@ class CarStore(context: Context) {
 
     companion object {
         const val MAX_CARS = 10
+        const val DEFAULT_COMMAND_TIMEOUT_SEC = 3
         private const val PREFS_NAME = "tkey_cars"
         private const val KEY_CARS = "cars"
         private const val KEY_LAST_VIN = "last_vin"
@@ -140,5 +152,6 @@ class CarStore(context: Context) {
         private val VIN_REGEX = Regex("^[A-Z0-9]{17}$")
 
         private fun proxKey(vin: String) = "prox_$vin"
+        private fun cmdTimeoutKey(vin: String) = "cmd_timeout_sec_$vin"
     }
 }

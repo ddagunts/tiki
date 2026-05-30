@@ -334,10 +334,7 @@ private fun Screen(modifier: Modifier = Modifier) {
                     car = car,
                     controller = controller,
                     onStart = { startWithPermissions(car.vin) },
-                    onBack = {
-                        controller.stop()
-                        settingsVin = null
-                    },
+                    onBack = { settingsVin = null },
                 )
             }
         } else if (active) {
@@ -1381,6 +1378,30 @@ private fun ActionTile(
             style = MaterialTheme.typography.labelMedium,
             color = if (enabled) MaterialTheme.colorScheme.onBackground else TextMuted,
             maxLines = 1,
+        )
+    }
+}
+
+@Composable
+private fun TimeoutChip(
+    modifier: Modifier = Modifier,
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(10.dp))
+            .background(if (selected) Accent else GraphiteHi)
+            .border(1.dp, if (selected) Accent else Hairline, RoundedCornerShape(10.dp))
+            .clickable(onClick = onClick)
+            .padding(vertical = 10.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelLarge,
+            color = if (selected) Ink else MaterialTheme.colorScheme.onBackground,
         )
     }
 }
@@ -2823,8 +2844,13 @@ private fun ProximitySettingsScreen(
     val connReady = connState is CarConnection.State.Ready
 
     // Auto-start the controller for this car while the settings screen is open
-    // so Session/Enroll have something to talk to. onBack stops it.
-    LaunchedEffect(car.vin) { onStart() }
+    // so Session/Enroll have something to talk to — but only if it isn't already
+    // running for this VIN. Unconditional starts cancel a healthy loop and force
+    // a full BLE rescan + handshake, which makes Lock/Unlock fail for the next
+    // few seconds after the user pops in to glance at settings.
+    LaunchedEffect(car.vin) {
+        if (controller.session.value?.vin != car.vin) onStart()
+    }
 
     val notifPermLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -3201,6 +3227,42 @@ private fun ProximitySettingsScreen(
                             style = MaterialTheme.typography.labelSmall,
                             color = TextMuted,
                             fontFamily = FontFamily.Monospace,
+                        )
+                    }
+                }
+            }
+        }
+
+        SectionLabel("Reliability")
+        var cmdTimeout by remember(car.vin) { mutableStateOf(store.getCommandTimeoutSec(car.vin)) }
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(20.dp),
+            color = Graphite,
+            border = androidx.compose.foundation.BorderStroke(1.dp, Hairline),
+        ) {
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    "Auto-recover unanswered commands",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onBackground,
+                )
+                Text(
+                    "If the car doesn't reply within this many seconds, refresh the encrypted session " +
+                        "and auto-retry Lock/Unlock. Trunk/charge port/windows are not auto-retried.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextSecondary,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    for (sec in 0..5) {
+                        TimeoutChip(
+                            modifier = Modifier.weight(1f),
+                            label = if (sec == 0) "Off" else "${sec}s",
+                            selected = cmdTimeout == sec,
+                            onClick = {
+                                cmdTimeout = sec
+                                store.setCommandTimeoutSec(car.vin, sec)
+                            },
                         )
                     }
                 }

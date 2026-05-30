@@ -136,7 +136,16 @@ class CarController(
             error("Transport ended in $transport")
         }
 
-        val s = TeslaSession(identity, conn, vin)
+        val store = CarStore(ctx)
+        val s = TeslaSession(
+            identity = identity,
+            connection = conn,
+            vin = vin,
+            // Re-read on every send so the user can change the slider in settings without
+            // restarting the controller. CarStore lookups are sync SharedPreferences reads;
+            // cheap enough to do per command.
+            commandTimeoutSecProvider = { store.getCommandTimeoutSec(vin) },
+        )
         s.start()
         _session.value = s
 
