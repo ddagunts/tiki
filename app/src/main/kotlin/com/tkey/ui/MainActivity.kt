@@ -762,7 +762,7 @@ private fun CarCard(
 }
 
 /**
- * Compact live readout shown beneath a car card when proximity unlock is active.
+ * Compact live readout shown beneath a car card when proximity is active.
  * Auto-updates as [ProximityRegistry] publishes new samples (every beacon and every
  * 2 s service tick), so the numbers reflect reality without a manual refresh.
  */
@@ -804,12 +804,18 @@ private fun ProximityLiveReadout(
         }
     }
     Spacer(Modifier.height(6.dp))
-    Text(
-        "Unlock ≥ ${cfg.unlockRssi} dBm  ·  Lock ≤ ${cfg.lockRssi} dBm",
-        style = MaterialTheme.typography.bodySmall,
-        color = TextSecondary,
-        fontFamily = FontFamily.Monospace,
-    )
+    val thresholdParts = buildList {
+        if (cfg.unlockEnabled) add("Unlock ≥ ${cfg.unlockRssi} dBm")
+        if (cfg.lockEnabled) add("Lock ≤ ${cfg.lockRssi} dBm")
+    }
+    if (thresholdParts.isNotEmpty()) {
+        Text(
+            thresholdParts.joinToString("  ·  "),
+            style = MaterialTheme.typography.bodySmall,
+            color = TextSecondary,
+            fontFamily = FontFamily.Monospace,
+        )
+    }
 }
 
 @Composable
@@ -1450,10 +1456,11 @@ private fun ProximityToggleCard(
     val configs by ProximityRegistry.configs.collectAsState()
     // Mirror persisted state so the switch reflects toggles immediately while the registry
     // refresh round-trips through SharedPreferences + service start/stop.
-    var enabled by remember(vin) { mutableStateOf(carStore.getProximity(vin).enabled) }
+    var cfg by remember(vin) { mutableStateOf(carStore.getProximity(vin)) }
     LaunchedEffect(configs, vin) {
-        enabled = configs[vin]?.enabled ?: carStore.getProximity(vin).enabled
+        cfg = configs[vin] ?: carStore.getProximity(vin)
     }
+    val enabled = cfg.enabled
 
     val notifPermLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -1473,13 +1480,19 @@ private fun ProximityToggleCard(
         ) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    "Proximity unlock",
+                    "Proximity",
                     style = MaterialTheme.typography.titleSmall,
                     color = MaterialTheme.colorScheme.onBackground,
                     fontWeight = FontWeight.SemiBold,
                 )
                 Text(
-                    if (enabled) "On — tap to calibrate" else "Off — tap to set up",
+                    when {
+                        !cfg.enabled -> "Off — tap to set up"
+                        cfg.unlockEnabled && cfg.lockEnabled -> "Unlock + lock — tap to calibrate"
+                        cfg.unlockEnabled -> "Unlock only — tap to calibrate"
+                        cfg.lockEnabled -> "Lock only — tap to calibrate"
+                        else -> "On — tap to configure"
+                    },
                     style = MaterialTheme.typography.labelSmall,
                     color = TextSecondary,
                 )
@@ -1495,9 +1508,9 @@ private fun ProximityToggleCard(
                     ) {
                         notifPermLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
                     }
-                    enabled = on
-                    val cur = carStore.getProximity(vin)
-                    carStore.setProximity(vin, cur.copy(enabled = on))
+                    val updated = cfg.copy(enabled = on)
+                    cfg = updated
+                    carStore.setProximity(vin, updated)
                     ProximityRegistry.refresh(ctx)
                 },
                 colors = SwitchDefaults.colors(
@@ -2994,14 +3007,14 @@ private fun ProximitySettingsScreen(
             }
         }
 
-        SectionLabel("Proximity unlock")
+        SectionLabel("Proximity")
         Surface(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(20.dp),
             color = Graphite,
             border = androidx.compose.foundation.BorderStroke(1.dp, Hairline),
         ) {
-            Column(modifier = Modifier.padding(16.dp)) {
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
@@ -3010,7 +3023,7 @@ private fun ProximitySettingsScreen(
                             color = MaterialTheme.colorScheme.onBackground,
                         )
                         Text(
-                            "Auto-unlock when this phone approaches the car, and auto-lock when it walks away.",
+                            "Watch this car's Bluetooth signal and act automatically.",
                             style = MaterialTheme.typography.bodySmall,
                             color = TextSecondary,
                         )
@@ -3036,41 +3049,99 @@ private fun ProximitySettingsScreen(
                         ),
                     )
                 }
+                if (cfg.enabled) {
+                    Divider()
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                "Auto-unlock on approach",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = MaterialTheme.colorScheme.onBackground,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Text(
+                                "Unlock when the phone's signal rises above the threshold.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = TextSecondary,
+                            )
+                        }
+                        Spacer(Modifier.width(12.dp))
+                        Switch(
+                            checked = cfg.unlockEnabled,
+                            onCheckedChange = { on -> persist(cfg.copy(unlockEnabled = on)) },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Ink,
+                                checkedTrackColor = Accent,
+                                uncheckedTrackColor = GraphiteHi,
+                                uncheckedBorderColor = Hairline,
+                            ),
+                        )
+                    }
+                    Divider()
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                "Auto-lock on departure",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = MaterialTheme.colorScheme.onBackground,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Text(
+                                "Lock once the signal stays below the threshold for the dwell period.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = TextSecondary,
+                            )
+                        }
+                        Spacer(Modifier.width(12.dp))
+                        Switch(
+                            checked = cfg.lockEnabled,
+                            onCheckedChange = { on -> persist(cfg.copy(lockEnabled = on)) },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Ink,
+                                checkedTrackColor = Accent,
+                                uncheckedTrackColor = GraphiteHi,
+                                uncheckedBorderColor = Hairline,
+                            ),
+                        )
+                    }
+                }
             }
         }
 
-        // Lock-delay warning, prominent so users don't expect snappy auto-lock.
-        Surface(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(20.dp),
-            color = Graphite,
-            border = androidx.compose.foundation.BorderStroke(1.dp, Warning.copy(alpha = 0.5f)),
-        ) {
-            Row(
-                modifier = Modifier.padding(14.dp),
-                verticalAlignment = Alignment.Top,
+        // Lock-delay warning, shown only when auto-lock is enabled.
+        if (cfg.enabled && cfg.lockEnabled) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(20.dp),
+                color = Graphite,
+                border = androidx.compose.foundation.BorderStroke(1.dp, Warning.copy(alpha = 0.5f)),
             ) {
-                Icon(
-                    Icons.Filled.Whatshot,
-                    contentDescription = null,
-                    tint = Warning,
-                    modifier = Modifier.size(20.dp),
-                )
-                Spacer(Modifier.width(10.dp))
-                Column {
-                    Text(
-                        "Auto-lock isn't instant",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = Warning,
-                        fontWeight = FontWeight.SemiBold,
+                Row(
+                    modifier = Modifier.padding(14.dp),
+                    verticalAlignment = Alignment.Top,
+                ) {
+                    Icon(
+                        Icons.Filled.Whatshot,
+                        contentDescription = null,
+                        tint = Warning,
+                        modifier = Modifier.size(20.dp),
                     )
-                    Spacer(Modifier.height(2.dp))
-                    Text(
-                        "Lock fires once the phone's signal stays weak for the dwell period, " +
-                            "not the instant you step away.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = TextSecondary,
-                    )
+                    Spacer(Modifier.width(10.dp))
+                    Column {
+                        Text(
+                            "Auto-lock isn't instant",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = Warning,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            "Lock fires once the phone's signal stays weak for the dwell period, " +
+                                "not the instant you step away.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextSecondary,
+                        )
+                    }
                 }
             }
         }

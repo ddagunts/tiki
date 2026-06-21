@@ -237,7 +237,7 @@ class ProximityService : Service() {
                             lastActionMs = if (action != null) now else null,
                         ),
                     )
-                    if (action != null) actionQueue.send(vin to action)
+                    if (action != null && isActionAllowed(vin, action)) actionQueue.send(vin to action)
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -269,8 +269,16 @@ class ProximityService : Service() {
                         lastActionMs = if (action != null) now else null,
                     ),
                 )
-                if (action != null) actionQueue.send(vin to action)
+                if (action != null && isActionAllowed(vin, action)) actionQueue.send(vin to action)
             }
+        }
+    }
+
+    private fun isActionAllowed(vin: String, action: ProximityFsm.Action): Boolean {
+        val cfg = ProximityRegistry.configs.value[vin] ?: return true
+        return when (action) {
+            ProximityFsm.Action.Unlock -> cfg.unlockEnabled
+            ProximityFsm.Action.Lock -> cfg.lockEnabled
         }
     }
 
@@ -323,7 +331,12 @@ class ProximityService : Service() {
             } ?: error("transport timeout")
             if (transport !is CarConnection.State.Ready) error("transport ended in $transport")
 
-            val session = TeslaSession(identity, conn, vin)
+            val session = TeslaSession(
+                identity = identity,
+                connection = conn,
+                vin = vin,
+                commandTimeoutSecProvider = { CarStore(this@ProximityService).getCommandTimeoutSec(vin) },
+            )
             try {
                 session.start()
                 session.requestSessionInfo(UniversalMessage.Domain.DOMAIN_VEHICLE_SECURITY)
@@ -424,10 +437,10 @@ class ProximityService : Service() {
         val mgr = getSystemService(NotificationManager::class.java) ?: return
         val ch = NotificationChannel(
             CHANNEL_ID,
-            "Proximity unlock",
+            "Proximity",
             NotificationManager.IMPORTANCE_LOW,
         ).apply {
-            description = "Keeps TKey listening for your car so it can unlock when you approach."
+            description = "Keeps TKey listening for your car's Bluetooth signal for proximity-based locking and unlocking."
             setShowBadge(false)
         }
         mgr.createNotificationChannel(ch)
@@ -498,10 +511,18 @@ class ProximityService : Service() {
         val ema = live?.ema?.roundToInt()
         val signalPart = if (ema != null) "$ema dBm" else "waiting…"
         val stateLabel = if (isNear) "NEAR" else "FAR"
-        val nextDirection = if (isNear) "lock" else "unlock"
+        val nextDirection = when {
+            isNear && cfg.lockEnabled -> "lock"
+            !isNear && cfg.unlockEnabled -> "unlock"
+            else -> null
+        }
         val nextThreshold = if (isNear) cfg.lockRssi else cfg.unlockRssi
         // Single-line so it fits the collapsed notification view; the title carries the car name.
-        val text = "$stateLabel · $signalPart · next: $nextDirection @ $nextThreshold dBm"
+        val text = if (nextDirection != null) {
+            "$stateLabel · $signalPart · next: $nextDirection @ $nextThreshold dBm"
+        } else {
+            "$stateLabel · $signalPart"
+        }
         return "TKey · $name" to text
     }
 

@@ -3,12 +3,18 @@ package com.tkey.ui.proximity
 import org.json.JSONObject
 
 /**
- * Per-car proximity-unlock configuration. RSSI values are in dBm (more negative = farther).
+ * Per-car proximity configuration. RSSI values are in dBm (more negative = farther).
  * Hysteresis is enforced via the gap between [unlockRssi] (entering NEAR) and [lockRssi]
  * (entering FAR); the lock threshold must be at least 5 dBm weaker than the unlock threshold.
+ *
+ * [unlockEnabled] and [lockEnabled] independently gate each action: the FSM always tracks
+ * NEAR/FAR state (so it can re-unlock on the next approach), but an action is only dispatched
+ * when its flag is true.
  */
 data class ProximityConfig(
     val enabled: Boolean = false,
+    val unlockEnabled: Boolean = true,
+    val lockEnabled: Boolean = true,
     val unlockRssi: Int = DEFAULT_UNLOCK_RSSI,
     val lockRssi: Int = DEFAULT_LOCK_RSSI,
     val enterDwellMs: Long = DEFAULT_ENTER_DWELL_MS,
@@ -26,6 +32,8 @@ data class ProximityConfig(
 
     fun toJson(): JSONObject = JSONObject()
         .put("enabled", enabled)
+        .put("unlockEnabled", unlockEnabled)
+        .put("lockEnabled", lockEnabled)
         .put("unlockRssi", unlockRssi)
         .put("lockRssi", lockRssi)
         .put("enterDwellMs", enterDwellMs)
@@ -53,6 +61,8 @@ data class ProximityConfig(
                 .coerceIn(MIN_RSSI, unlock - MIN_HYSTERESIS_DB)
             return ProximityConfig(
                 enabled = obj.optBoolean("enabled", false),
+                unlockEnabled = obj.optBoolean("unlockEnabled", true),
+                lockEnabled = obj.optBoolean("lockEnabled", true),
                 unlockRssi = unlock,
                 lockRssi = lock,
                 enterDwellMs = obj.optLong("enterDwellMs", DEFAULT_ENTER_DWELL_MS)
