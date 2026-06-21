@@ -86,6 +86,32 @@ class CarController(
         _phase.value = Phase.Idle
     }
 
+    /**
+     * Re-handshake the VCSEC (and optionally Infotainment) session so the
+     * epoch/counter are fresh. Called on every app-foreground resume to ensure
+     * controls work even if the session went stale while backgrounded.
+     * No-op unless we're in [Phase.Ready] with a live connection and session.
+     */
+    fun refreshSessions() {
+        if (_phase.value !is Phase.Ready) return
+        val conn = _connection.value ?: return
+        if (conn.state.value !is CarConnection.State.Ready) return
+        val s = _session.value ?: return
+        scope.launch {
+            runCatching { s.requestSessionInfo(UniversalMessage.Domain.DOMAIN_VEHICLE_SECURITY) }
+                .onFailure { Log.w(TAG, "foreground VCSEC session refresh failed: ${it.message}") }
+            runCatching { s.requestVehicleStatus() }
+                .onFailure { Log.w(TAG, "foreground GET_STATUS failed: ${it.message}") }
+            if (!s.isReady(UniversalMessage.Domain.DOMAIN_INFOTAINMENT)) {
+                infotainmentJob?.cancel()
+                infotainmentJob = scope.launch { ensureInfotainmentSession(s, conn) }
+            } else {
+                runCatching { s.requestSessionInfo(UniversalMessage.Domain.DOMAIN_INFOTAINMENT) }
+                    .onFailure { Log.w(TAG, "foreground Infotainment session refresh failed: ${it.message}") }
+            }
+        }
+    }
+
     fun shutdown() {
         stop()
         scope.cancel()
