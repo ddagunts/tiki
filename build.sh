@@ -9,7 +9,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-JAVA_HOME="${JAVA_HOME:-/home/dima/Downloads/android-studio-panda4-patch1-linux/android-studio/jbr}"
+JAVA_HOME="${JAVA_HOME:-/home/dima/Downloads/android-studio-quail1-patch2-linux/android-studio/jbr}"
 export JAVA_HOME
 
 APK="app/build/outputs/apk/release/app-release.apk"

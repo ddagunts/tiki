@@ -299,7 +299,7 @@ private fun Screen(modifier: Modifier = Modifier) {
     DisposableEffect(lifecycleOwner, controller) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
-                controller.refreshSessions()
+                controller.onForegroundResume()
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -3334,7 +3334,7 @@ private fun ProximitySettingsScreen(
                 )
                 Text(
                     "If the car doesn't reply within this many seconds, refresh the encrypted session " +
-                        "and auto-retry Lock/Unlock. Trunk/charge port/windows are not auto-retried.",
+                        "so the next tap works. Commands are never re-sent automatically.",
                     style = MaterialTheme.typography.bodySmall,
                     color = TextSecondary,
                 )

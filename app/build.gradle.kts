@@ -32,8 +32,8 @@ android {
         applicationId = "com.tkey"
         minSdk = 31
         targetSdk = 36
-        versionCode = 15
-        versionName = "0.4.9"
+        versionCode = 16
+        versionName = "0.4.10"
     }
 
     signingConfigs {

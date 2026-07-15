@@ -25,6 +25,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.ByteArrayOutputStream
 import java.util.UUID
 
@@ -44,6 +45,12 @@ private const val MAX_MESSAGE_SIZE = 1024
 private const val TARGET_MTU = 517 // BLE 4.2+ extended MTU max
 private const val MAX_RETRIES = 3
 private const val RETRY_DELAY_MS = 400L
+/**
+ * A healthy stack acks a GATT write within milliseconds. If onCharacteristicWrite
+ * never fires the link is dead — without this bound, send() would hold writeMutex
+ * forever and every later command (including recovery pings) would hang silently.
+ */
+private const val WRITE_ACK_TIMEOUT_MS = 5_000L
 /** Generic GATT error from the Android stack — transient on first contact, retry. */
 private const val GATT_ERROR_133 = 133
 
@@ -145,7 +152,8 @@ class CarConnection(
                 val ack = CompletableDeferred<Int>()
                 writeAck = ack
                 writeChunk(g, tx, chunk)
-                val status = ack.await() // blocks until onCharacteristicWrite
+                val status = withTimeoutOrNull(WRITE_ACK_TIMEOUT_MS) { ack.await() }
+                    ?: error("BLE write ack timeout at offset $off/${framed.size} — link presumed dead")
                 if (status != BluetoothGatt.GATT_SUCCESS) {
                     error("BLE write failed at offset $off/${framed.size}: status=$status")
                 }

@@ -624,11 +624,6 @@ class TeslaSession(
     private suspend fun sendVcsecSigned(
         unsigned: Vcsec.UnsignedMessage,
         label: String,
-        /**
-         * Set when the timeout watcher is re-issuing the command after a re-handshake.
-         * Prevents an unanswered retry from launching its own retry → infinite loop.
-         */
-        isAutoRetry: Boolean = false,
     ) = sendMutex.withLock {
         val state = domainStates[UniversalMessage.Domain.DOMAIN_VEHICLE_SECURITY]
             ?: error("VCSEC session not yet established — call requestSessionInfo first")
@@ -687,55 +682,28 @@ class TeslaSession(
 
         val timeoutSec = commandTimeoutSecProvider()
         if (timeoutSec > 0) {
-            scope.launch { watchSignedTimeout(uuid, unsigned, label, timeoutSec, isAutoRetry) }
+            scope.launch { watchSignedTimeout(uuid, label, timeoutSec) }
         }
     }
 
     /**
      * If a signed VCSEC command goes unanswered for [timeoutSec] seconds, refresh the
      * session (counter/epoch desync is the usual reason a command is silently ignored).
-     * For idempotent RKE actions we also re-fire the original command once — closures
-     * are intentionally NOT retried because they could double-actuate (e.g. open trunk
-     * fires, reply lost, user already pulled handle, retry slams it shut).
+     * Deliberately does NOT re-send the command: a lock/unlock replayed seconds after
+     * the tap proved more confusing than a command that visibly did nothing, and the
+     * dead-link case is now handled up front by the foreground link check.
      */
     private suspend fun watchSignedTimeout(
         uuid: ByteString,
-        unsigned: Vcsec.UnsignedMessage,
         label: String,
         timeoutSec: Int,
-        isAutoRetry: Boolean,
     ) {
         delay(timeoutSec * 1000L)
         // Reply already landed → handleIncoming removed the entry. Nothing to do.
         if (pendingByUuid.remove(uuid) == null) return
         Log.w(TAG, "$label unanswered after ${timeoutSec}s — refreshing VCSEC session")
-
-        // Snapshot the current epoch so we can detect a fresh SessionInfo landing. The
-        // domainStates entry doesn't get cleared on requestSessionInfo — it's overwritten
-        // when the reply arrives — so we have to compare epoch bytes, not just presence.
-        val staleEpoch = domainStates[UniversalMessage.Domain.DOMAIN_VEHICLE_SECURITY]?.epoch
         runCatching { requestSessionInfo(UniversalMessage.Domain.DOMAIN_VEHICLE_SECURITY) }
             .onFailure { Log.w(TAG, "auto-refresh requestSessionInfo failed: ${it.message}") }
-
-        if (isAutoRetry || label !in RETRYABLE_LABELS) return
-
-        // Wait briefly for the new SessionInfo to land so the retry rides the fresh session.
-        // If the handshake itself doesn't complete in time we give up — better than
-        // spam-resending against a half-dead link.
-        val deadline = System.currentTimeMillis() + 2000L
-        while (System.currentTimeMillis() < deadline) {
-            val current = domainStates[UniversalMessage.Domain.DOMAIN_VEHICLE_SECURITY]?.epoch
-            if (current != null && (staleEpoch == null || !current.contentEquals(staleEpoch))) break
-            delay(100L)
-        }
-        val refreshed = domainStates[UniversalMessage.Domain.DOMAIN_VEHICLE_SECURITY]?.epoch
-        if (refreshed == null || (staleEpoch != null && refreshed.contentEquals(staleEpoch))) {
-            Log.w(TAG, "$label retry skipped: VCSEC handshake didn't complete after refresh")
-            return
-        }
-        Log.i(TAG, "$label auto-retry after session refresh")
-        runCatching { sendVcsecSigned(unsigned, label, isAutoRetry = true) }
-            .onFailure { Log.w(TAG, "$label auto-retry failed: ${it.message}") }
     }
 
     private fun vehicleClockNow(state: DomainState): Int {
@@ -746,12 +714,6 @@ class TeslaSession(
     private companion object Const {
         const val COMMAND_EXPIRY_SEC = 5
         val VOID: Common.Void = Common.Void.getDefaultInstance()
-        /**
-         * VCSEC commands the auto-recovery loop is allowed to re-fire after a session
-         * refresh. Lock + Unlock are idempotent (the car ends up in the requested state
-         * either way). Closures, windows, chargeport, and wake are intentionally absent.
-         */
-        val RETRYABLE_LABELS = setOf("RKE_LOCK", "RKE_UNLOCK")
     }
 
     /**

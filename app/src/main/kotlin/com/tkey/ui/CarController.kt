@@ -24,8 +24,13 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.withTimeout
 
 private const val TAG = "TKey.Ctrl"
+
+/** How long the foreground link check waits for the car to answer before restarting. */
+private const val PING_TIMEOUT_MS = 2_000L
 
 /**
  * Drives the full scan → connect → session-handshake pipeline for one car
@@ -61,6 +66,11 @@ class CarController(
     private val scope = MainScope()
     private var loopJob: Job? = null
     private var infotainmentJob: Job? = null
+    private var resumeCheckJob: Job? = null
+    // Remembered from start() so the foreground link check can do a full pipeline
+    // restart without the UI having to pass the car in again.
+    private var activeVin: String? = null
+    private var activePairedProvider: () -> Boolean = { true }
 
     /**
      * @param pairedProvider returns true if this car has completed first-time
@@ -70,6 +80,8 @@ class CarController(
      * picks up "paired" state changes between reconnects.
      */
     fun start(vin: String, pairedProvider: () -> Boolean = { true }) {
+        activeVin = vin
+        activePairedProvider = pairedProvider
         // Chain the new loop after the old one's `finally { cleanupSession() }` so we don't
         // race a still-disconnecting connection from the previous iteration.
         val previous = loopJob
@@ -80,6 +92,9 @@ class CarController(
     }
 
     fun stop() {
+        activeVin = null
+        resumeCheckJob?.cancel()
+        resumeCheckJob = null
         loopJob?.cancel()
         loopJob = null
         cleanupSession()
@@ -87,28 +102,85 @@ class CarController(
     }
 
     /**
-     * Re-handshake the VCSEC (and optionally Infotainment) session so the
-     * epoch/counter are fresh. Called on every app-foreground resume to ensure
-     * controls work even if the session went stale while backgrounded.
-     * No-op unless we're in [Phase.Ready] with a live connection and session.
+     * Foreground link check. After backgrounding, the GATT handle often still reports
+     * Ready while the car has long since stopped listening — commands then fail
+     * silently. So don't trust the state, prove it: send an unsigned GET_STATUS and
+     * require *any* inbound frame within [PING_TIMEOUT_MS].
+     *
+     *  - ping answered → refresh the sessions in place (epoch/counter may be stale)
+     *  - ping unanswered, send failed, or link not actually Ready → tear everything
+     *    down and restart the scan → connect → handshake pipeline from scratch
+     *  - foregrounded mid-backoff countdown → skip the wait, rescan immediately
+     *  - scan/connect/handshake already in flight, or Idle → leave it alone
      */
-    fun refreshSessions() {
-        if (_phase.value !is Phase.Ready) return
-        val conn = _connection.value ?: return
-        if (conn.state.value !is CarConnection.State.Ready) return
-        val s = _session.value ?: return
-        scope.launch {
-            runCatching { s.requestSessionInfo(UniversalMessage.Domain.DOMAIN_VEHICLE_SECURITY) }
-                .onFailure { Log.w(TAG, "foreground VCSEC session refresh failed: ${it.message}") }
-            runCatching { s.requestVehicleStatus() }
-                .onFailure { Log.w(TAG, "foreground GET_STATUS failed: ${it.message}") }
-            if (!s.isReady(UniversalMessage.Domain.DOMAIN_INFOTAINMENT)) {
-                infotainmentJob?.cancel()
-                infotainmentJob = scope.launch { ensureInfotainmentSession(s, conn) }
-            } else {
-                runCatching { s.requestSessionInfo(UniversalMessage.Domain.DOMAIN_INFOTAINMENT) }
-                    .onFailure { Log.w(TAG, "foreground Infotainment session refresh failed: ${it.message}") }
+    fun onForegroundResume() {
+        if (loopJob?.isActive != true) return
+        val vin = activeVin ?: return
+        resumeCheckJob?.cancel()
+        resumeCheckJob = scope.launch {
+            when (_phase.value) {
+                is Phase.Reconnecting -> {
+                    Log.i(TAG, "foregrounded during backoff — restarting scan now")
+                    start(vin, activePairedProvider)
+                }
+                is Phase.Ready -> {
+                    val s = _session.value
+                    val conn = _connection.value
+                    val alive = s != null &&
+                        conn?.state?.value is CarConnection.State.Ready &&
+                        ping(s)
+                    if (alive) {
+                        Log.i(TAG, "foreground ping OK — refreshing sessions in place")
+                        refreshSessions(s!!, conn!!)
+                    } else {
+                        Log.w(TAG, "foreground ping failed — full BLE restart")
+                        start(vin, activePairedProvider)
+                    }
+                }
+                else -> Unit // Scanning/Connecting/Handshaking: a fresh attempt is already underway
             }
+        }
+    }
+
+    /**
+     * True if the car answers anything within [PING_TIMEOUT_MS] of an unsigned
+     * GET_STATUS. Any inbound frame counts — the question is link liveness, not
+     * which reply it was. Unsigned, so it also works for not-yet-paired cars.
+     */
+    private suspend fun ping(s: TeslaSession): Boolean {
+        val rx0 = s.rxCount.value
+        return try {
+            withTimeout(PING_TIMEOUT_MS) {
+                s.requestVehicleStatus()
+                s.rxCount.first { it != rx0 }
+            }
+            true
+        } catch (e: TimeoutCancellationException) {
+            false
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            Log.w(TAG, "ping send failed: ${e.message}")
+            false
+        }
+    }
+
+    /**
+     * Re-handshake the VCSEC (and optionally Infotainment) session so the
+     * epoch/counter are fresh after the link survived a foreground ping.
+     * Skipped for unpaired cars — session_info against an unwhitelisted key
+     * just looks like a retry storm.
+     */
+    private suspend fun refreshSessions(s: TeslaSession, conn: CarConnection) {
+        if (!activePairedProvider()) return
+        runCatching { s.requestSessionInfo(UniversalMessage.Domain.DOMAIN_VEHICLE_SECURITY) }
+            .onFailure { Log.w(TAG, "foreground VCSEC session refresh failed: ${it.message}") }
+        if (!s.isReady(UniversalMessage.Domain.DOMAIN_INFOTAINMENT)) {
+            infotainmentJob?.cancel()
+            infotainmentJob = scope.launch { ensureInfotainmentSession(s, conn) }
+        } else {
+            runCatching { s.requestSessionInfo(UniversalMessage.Domain.DOMAIN_INFOTAINMENT) }
+                .onFailure { Log.w(TAG, "foreground Infotainment session refresh failed: ${it.message}") }
         }
     }
 
