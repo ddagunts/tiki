@@ -2191,44 +2191,71 @@ private fun ComfortScreen(
                     onClick = { runAndRefresh { session.climateOff() } },
                 )
             }
+            SubLabel("SET · DRIVER / PASSENGER")
+            // Tesla's HVAC accepts 15–28°C (59–82°F); the car UI steps by 0.5°C.
+            val minC = 15f
+            val maxC = 28f
+            val stepC = 0.5f
+            // Local optimistic setpoint so rapid −/+ taps step from the latest tap
+            // instead of the last reported snapshot (which lags ~1.5s behind each
+            // command). Resyncs whenever the car reports fresh values.
+            var setpoint by remember(driverTempC, passengerTempC) {
+                mutableStateOf(driverTempC to passengerTempC)
+            }
+            val setTemps: (Float, Float) -> Unit = { d, p ->
+                setpoint = d to p
+                runAndRefresh { session.setClimateTemperature(d, p) }
+            }
+            val stepTemps: (Float) -> Unit = { delta ->
+                setTemps(
+                    (setpoint.first + delta).coerceIn(minC, maxC),
+                    (setpoint.second + delta).coerceIn(minC, maxC),
+                )
+            }
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    SubLabel("SET · DRIVER / PASSENGER")
-                    Text(
-                        "${"%.1f".format(driverTempC)}°C  ·  ${"%.1f".format(passengerTempC)}°C",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onBackground,
-                    )
-                }
-                Row(
+                PillBtn(
                     modifier = Modifier.weight(1f),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    val cool = 20.0f
-                    val warm = (72f - 32f) * 5f / 9f
-                    PillBtn(
-                        modifier = Modifier.weight(1f),
-                        text = "68",
-                        selected = false,
-                        enabled = enabled,
-                        onClick = {
-                            runAndRefresh { session.setClimateTemperature(cool, cool) }
-                        },
-                    )
-                    PillBtn(
-                        modifier = Modifier.weight(1f),
-                        text = "72",
-                        selected = false,
-                        enabled = enabled,
-                        onClick = {
-                            runAndRefresh { session.setClimateTemperature(warm, warm) }
-                        },
-                    )
-                }
+                    text = "−",
+                    selected = false,
+                    enabled = enabled && setpoint.first > minC,
+                    onClick = { stepTemps(-stepC) },
+                )
+                Text(
+                    "${"%.1f".format(setpoint.first)}°C  ·  ${"%.1f".format(setpoint.second)}°C",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onBackground,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.weight(2f),
+                )
+                PillBtn(
+                    modifier = Modifier.weight(1f),
+                    text = "+",
+                    selected = false,
+                    enabled = enabled && setpoint.first < maxC,
+                    onClick = { stepTemps(stepC) },
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                val cool = 20.0f // 68°F
+                val warm = (72f - 32f) * 5f / 9f
+                PillBtn(
+                    modifier = Modifier.weight(1f),
+                    text = "68°F",
+                    selected = false,
+                    enabled = enabled,
+                    onClick = { setTemps(cool, cool) },
+                )
+                PillBtn(
+                    modifier = Modifier.weight(1f),
+                    text = "72°F",
+                    selected = false,
+                    enabled = enabled,
+                    onClick = { setTemps(warm, warm) },
+                )
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                 OptimisticTogglePill(
